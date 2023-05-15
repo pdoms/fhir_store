@@ -1,0 +1,5 @@
+{
+  "devDependencies": {
+    "camelcase": "^6.3.0"
+  }
+}
