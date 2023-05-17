@@ -1,3 +1,3 @@
-pub mod memory;
+pub mod resource;
 pub mod store;
 

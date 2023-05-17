@@ -1,54 +1,58 @@
+
+use std::println;
+
 use crate::error::{Result, Error};
-use crate::store::memory::Memory;
+use crate::store::resource::Resource;
 use crate::resources::ResourceId;
 use crate::datatypes::{KEY, get_key, Store, get_expects, StoreWith};
 
 use super::lengths::Lengths;
 
-
-//pub fn to_store<T: Read>(mut data: T) -> Memory {
-//    let mut buffer = Vec::<u8>::new();
-//    let _ = data.read_to_end(&mut buffer);
-//    let mut parser = Parser::new(&buffer[..]);
-//    parser.parse();
-//    parser.membuf
-//}
-
-
-
-
-
 pub struct JsonParser<'s> {
     resource: ResourceId,
     src: &'s[u8],
     key: Option<KEY>,
-    mem: Memory,
-    lengths: Lengths 
+    rsrc: Resource,
+    lengths: Lengths,
+    len: usize
 }
 
 impl<'s> JsonParser<'s> {
     
-    pub fn new_from_slice(src: &'s[u8], resource: &str) -> Result<Self> {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn new_from_slice(src: &'s[u8], resource: &str, page_num: usize) -> Result<Self> {
         
-        let mut mem = Memory::new()?;
         let resource = ResourceId::try_from(resource)?;
+        let mut rsrc = Resource::new(resource.clone(), page_num)?;
         let mut lengths = Lengths::default();
-        //skip 2 bytes for total length
-        mem.reserve_length()?;
         //push on stack
-        lengths.push(0);
-        //set resource id
-        mem.set_u16(resource as u16)?;
+        lengths.push(rsrc.len());
+        //skip 2 bytes for total length
+        rsrc.reserve_length()?;
+        lengths.add_to_last(2);
         Ok(Self {
             src,
             resource,
             key: None,
-            mem,
-            lengths
+            rsrc,
+            lengths,
+            len: 0
         })
     }
 
-    fn finalize(&mut self) {}
+    pub fn flush(&mut self) -> *mut u8 {
+        self.rsrc.get_mut_ptr()
+    }
+
+    fn finalize(&mut self) {
+        let (loc, length) = self.lengths.pop().unwrap();
+        println!("NOTE SURE!!!! len: {} loc: {loc} length: {length}", self.rsrc.len);
+        self.len = self.rsrc.len();
+        self.rsrc.set_u16_at(length, loc).unwrap();
+    }
 
     fn eat_char(&mut self) {
         self.src = &self.src[1..];
@@ -93,26 +97,6 @@ impl<'s> JsonParser<'s> {
         result
     }
 
-
-
-
-    //pub fn parse_str(&mut self) {
-    //    let result = self.consume_while(|c| {c == b'"'});
-    //    let acc_len;
-    //    if self.key {
-    //        let dt = DataType::from_key_bytes(&result);
-    //        acc_len = dt.get_len();
-    //        self.membuf.set_data_type(dt).unwrap();  
-    //        self.key = false;
-    //    } else {
-    //        let dt = DataType::vec_u8_to_store(result,DataId::STR);
-    //        acc_len = dt.get_len();
-    //        self.membuf.set_data_type(dt).unwrap();
-    //    }
-    //    if self.lengths.len() > 0 {
-    //        self.lengths.last_add(acc_len);
-    //    } 
-    //}
     fn parse_str(&mut self) -> Result<()> {
         let parsed = self.consume_while(|c| c == b'"');
         println!("Processing String: {s}", s = String::from_utf8(parsed.clone()).unwrap());
@@ -128,7 +112,8 @@ impl<'s> JsonParser<'s> {
             let expects = get_expects(key);
             if let Some(exp) = expects {
                 let dt_str_var = parsed.to_store_with(exp)?;
-                self.mem.set_data_type(dt_str_var)?;
+                let b = self.rsrc.set_data_type(dt_str_var)?;
+                self.lengths.add_to_last(b as u16);
                 self.key = None;
                 Ok(())
             } else {
@@ -140,19 +125,32 @@ impl<'s> JsonParser<'s> {
     }
 
     fn parse_obj(&mut self) -> Result<()> {
+        println!("FOUND OBJ");
         //push length item with current writer cursor
-        self.lengths.push(self.mem.len());
+        self.lengths.push(self.rsrc.len());
+        println!("{:?}", self.lengths);
         //reserve two for length
-        let _ = self.mem.reserve_length();
+        let _ = self.rsrc.reserve_length();
+        self.lengths.add_to_last(2);
         let key = self.parse_key()?;
-        //set dt in memory
+        //set dt in Resource
         self.key = Some(key.clone());
-        self.mem.set_data_type(key.to_store())?;
+        let b = self.rsrc.set_data_type(key.to_store())?;
+        self.lengths.add_to_last(b as u16);
         Ok(())
     }
 
     fn finish_obj(&mut self) {
+        match self.lengths.pop() {
+            Some(len) => {
+                self.rsrc.set_u16_at(len.1, len.0).unwrap();
+                self.eat_char();
+            },
+            None => {
+                panic!("None outcome for length shortening not yet implemented")
+            }
 
+        };
     }
     
     fn parse_key(&mut self) -> Result<KEY> {
@@ -163,6 +161,7 @@ impl<'s> JsonParser<'s> {
         };
         println!("Processing key: {key_str}");
         if let Some(key) = get_key(&key_str.to_ascii_lowercase()) {
+            println!("KEY ID: {}", key as u16);
             let peek = self.peek_char();
             if peek.is_some() {
                 if peek.unwrap() == &b'"' {
@@ -180,45 +179,39 @@ impl<'s> JsonParser<'s> {
 
     fn parse_signed(&mut self) {}
     fn parse_unsigned(&mut self) {}
+
     fn parse_bool(&mut self) -> Result<()> {
         //it can not be None
         if *self.peek_char().unwrap() == b't' {
             //parse true
             self.eat_chars("true".len());
-            self.mem.set_data_type(true.to_store())
+            let b = self.rsrc.set_data_type(true.to_store())?;
+            self.lengths.add_to_last(b as u16);
+            Ok(())
         } else {
             //parse false
             self.eat_chars("false".len());
-            self.mem.set_data_type(false.to_store())
+            let b = self.rsrc.set_data_type(false.to_store())?;
+            self.lengths.add_to_last(b as u16);
+            Ok(())
         }
     }
 
     pub fn parse(&mut self) -> Result<()> {
+        self.eat_ws();
         if self.peek_char().is_none() {
-            //maybe call finalize here???
+            self.finalize();
             return Ok(())
         }
-        self.eat_ws();
-        println!("Looking at: {}", *self.peek_char().unwrap() as char);
         // we know that we still have u8s left
         match *self.peek_char().unwrap() {
             b'{'        => {
                 self.eat_chars(2);
-                println!("Looking at: {}", self.peek_char().unwrap());
                 self.parse_obj()?;
                 self.parse()
             },
             b'}'        => {
-                match self.lengths.pop() {
-                    Some(len) => {
-                        self.mem.set_u16_at(len.1, len.0).unwrap();
-                        self.eat_char();
-                    },
-                    None => {
-                        panic!("None outcome for length shortening not yet implemented")
-                    }
-
-                };
+                self.finish_obj();
                 self.parse()
             },
             b'"'        => {
@@ -245,9 +238,10 @@ impl<'s> JsonParser<'s> {
                     }
                 }
                 let key = self.parse_key()?;
-                //set dt in memory
+                //set dt in Resource
                 self.key = Some(key.clone());
-                self.mem.set_data_type(key.to_store())?;
+                let b = self.rsrc.set_data_type(key.to_store())?;
+                self.lengths.add_to_last(b as u16);
                 self.parse()
             },
             b':' => {
@@ -255,53 +249,9 @@ impl<'s> JsonParser<'s> {
                 self.parse()
             },
             _           => panic!("{}", Error::UnknownSyntaxToken(*self.peek_char().unwrap()).to_string()) 
+        }
     }
-}
 
-    
-    //pub fn parse(&mut self) {
-    //    if self.buf.len() <= 0 {
-    //        return
-    //    }
-
-    //    let first = self.buf[0];
-    //    match first {
-    //        b' ' => {
-    //            self.eat_char();
-    //            return self.parse();
-    //        }
-    //        b'"' => {
-    //            self.eat_char();
-    //            self.parse_str();
-    //            self.eat_char();
-    //            return self.parse();
-    //        },
-    //        b'{' => {
-    //            println!("OBJ AT {}", self.membuf.len);
-    //            let curs = self.membuf.len;
-    //            self.lengths.push(curs);
-    //            self.membuf.advance_by(2);
-    //            println!("SETTING LEN AT {}", self.membuf.len);
-    //            println!("ID: {:?}", DataId::OBJ as u16);
-    //            self.membuf.set_u16(DataId::OBJ as u16).unwrap();
-    //            self.key = true;
-    //            self.eat_char();
-    //            return self.parse();
-    //        },
-    //        b'}' => {
-    //            let len = self.lengths.pop();
-    //            println!("stack len: {}", self.lengths.len());
-    //            println!("loc: {} len: {}", len.0, len.1);
-    //            self.membuf.set_u16_at(len.1, len.0).unwrap();
-    //            self.eat_char();
-    //            return self.parse();
-    //        }
-    //        _ => {
-    //            self.eat_char();
-    //            return self.parse()
-    //        }
-    //    }
-    //}
 }
 
 
@@ -318,8 +268,10 @@ mod test {
     #[test]
     fn test_to_store() {
         let json = r#"{"resourceType": "Patient", "id": "anid", "active": true}"#;
-        let mut parser = JsonParser::new_from_slice(json.as_bytes(), "Patient").unwrap();
+        let mut parser = JsonParser::new_from_slice(json.as_bytes(), "Patient", 1).unwrap();
         assert_eq!(parser.resource, ResourceId::Patient);
         let _  = parser.parse();
+        parser.finalize();
+        assert!(parser.len() > 0);
     }
 }

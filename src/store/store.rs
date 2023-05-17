@@ -1,8 +1,11 @@
-use std::io::{Read, BufRead, Write};
+use std::io::{Read, Write, Seek};
 use std::fs::{OpenOptions, File};
 use std::println;
 
-const PAGE_SIZE: usize = 1024;
+use super::resource::PAGE_SIZE;
+use crate::error::{Result, Error};
+use crate::parser::jsonparser::JsonParser;
+
 const INIT_PAGES: usize = 4;
 
 type PAGE = &'static [u8;PAGE_SIZE];
@@ -14,16 +17,16 @@ fn print_const() {
 #[derive(Debug)]
 pub struct Store {
     file: File,
-    header: StoreHeader
+    header: StoreHeader,
 }
 
 impl Store {
 
-   pub fn open() -> Result<Self, std::io::Error> {
-       print_const();
+    pub fn open() -> std::result::Result<Self, std::io::Error> {
+    print_const();
         match OpenOptions::new()
             .read(true)
-            .append(true)
+            .write(true)
             .create(true)
             .open("store.db") {
                 Ok(mut f) => {
@@ -35,9 +38,10 @@ impl Store {
                             let header = StoreHeader::new(INIT_PAGES as u16);
                             header.flush_init(buf.as_mut_ptr());
                             f.write(&buf)?;
+                            f.sync_all()?;
                             Ok(Self {
-                                file: f,
-                                header
+                               file: f,
+                               header,
                             })
                         } else {
                             println!("INFO: Reading Store Header.");
@@ -53,17 +57,51 @@ impl Store {
                         let header = StoreHeader::new(INIT_PAGES as u16);
                         header.flush_init(buf.as_mut_ptr());
                         f.write(&buf)?;
+                        f.sync_all()?;
                         Ok(Self {
                             file: f,
-                            header
+                            header,
                         })
                    }
                 },
                 Err(err) => Err(err)
             }
     }
-    pub fn create_resource<D: Read + BufRead>(&mut self, resource_id: &str, data: D) {
-        todo!()
+
+    pub fn get_page_copy(&mut self, num: usize) -> Vec<u8> {
+        let start = num * PAGE_SIZE;
+        self.file.seek(std::io::SeekFrom::Start(start as u64)).unwrap();
+        let mut buf = [0u8; PAGE_SIZE];
+        self.file.read_exact(&mut buf).unwrap();
+        buf.to_vec()
+    }
+    pub fn create_resource_from_json<D: Read>(&mut self, resource_id: &str, mut data: D) -> Result<()> {
+        let mut buf = Vec::new();
+        match data.read_to_end(&mut buf) {
+            Ok(_) => {
+                let page_num = self.header.inc_top();
+                let mut parser = JsonParser::new_from_slice(&buf, resource_id, page_num as usize)?;
+                parser.parse()?;
+                let ptr = parser.flush();
+                let len = parser.len();
+                println!("LENGTH {}", len);
+                let page_offset = (page_num - 1) * PAGE_SIZE as u16;
+                //TODO ERROR
+                println!("OFFSET: {page_offset}");
+                self.file.seek(std::io::SeekFrom::Start(page_offset as u64)).unwrap();
+                //TODO make sure mem size is not longer than page size
+                let buf: &[u8] = unsafe {
+                    let buf = std::ptr::slice_from_raw_parts(ptr, len);
+                    &*buf
+                };
+                println!("BUFFER: {:?}", buf);
+                
+                self.file.write_all(buf).unwrap();
+                self.file.sync_data().unwrap();
+                Ok(())
+            },
+            Err(err) => Err(Error::Custom(err.to_string()))
+        }
     }
 
     pub fn get_resource_by_id(&mut self, id: &str) {
@@ -72,26 +110,30 @@ impl Store {
 }
 
 
+
+
 #[derive(Debug)]
 struct StoreHeader {
     num_pages: u16,
     page_size: u16,
+    top_page: u16
 } 
 
 
 /// Header of the db main file. For now, this only includes 
-/// number of pages and page size. However, the header is one page long.
+/// number of pages, page size and top_page. However, the header is one page long.
 ///
 /// Layout:
 ///
-/// |TYPE|num pages|page size|...           |
-/// |----|---------|---------|--------------|
-/// |LEN |2        |2        |page size - 4 |
+/// |TYPE|num pages|page size|top page|...           |
+/// |----|---------|---------|--------|--------------|
+/// |LEN |2        |2        |2       |page size - 4 |
 impl StoreHeader {
     fn new(num_pages: u16) -> Self {
         Self {
             num_pages,
-            page_size: PAGE_SIZE as u16
+            page_size: PAGE_SIZE as u16,
+            top_page: 1
         }
     }
     
@@ -99,13 +141,17 @@ impl StoreHeader {
     fn read_init(head: &[u8]) -> Self {
         let mut num = [0u8;2];
         let mut size = [0u8;2];
+        let mut top = [0u8;2];
         num[0] = head[0]; 
         num[1] = head[1]; 
         size[0] = head[2]; 
         size[1] = head[3]; 
+        top[0] = head[4]; 
+        top[1] = head[5]; 
         Self {
             num_pages: u16::from_be_bytes(num),
-            page_size: u16::from_be_bytes(size)
+            page_size: u16::from_be_bytes(size),
+            top_page: u16::from_be_bytes(top)
         }
     }
 
@@ -113,26 +159,38 @@ impl StoreHeader {
     fn flush_init(&self, buf: *mut u8) {
         let num = self.num_pages.to_be_bytes();
         let size = self.page_size.to_be_bytes();
+        let top = self.top_page.to_be_bytes();
         unsafe {
-         buf.write(num[0]);   
-         buf.add(1).write(num[1]);   
-         buf.add(2).write(size[0]);   
-         buf.add(3).write(size[1]);   
+            buf.write(num[0]);   
+            buf.add(1).write(num[1]);   
+            buf.add(2).write(size[0]);   
+            buf.add(3).write(size[1]);   
+            buf.add(4).write(top[0]);   
+            buf.add(5).write(top[1]);   
         }
+    }
+
+    fn inc_top(&mut self) -> u16 {
+        self.top_page+=1;
+        self.top_page
     }
 }
 
 
 #[cfg(test)]
 mod test {
+
     use super::*;
 
     #[test]
     fn test_open_store() {
-        let store = Store::open().unwrap();
+        let mut store = Store::open().unwrap();
         assert_eq!(store.header.num_pages, INIT_PAGES as u16);
         assert_eq!(store.header.page_size, PAGE_SIZE as u16);
+        let json = File::open("example.json").unwrap();
+        store.create_resource_from_json("patient", json).unwrap();
     }
+
 }
 
 

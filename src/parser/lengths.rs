@@ -9,7 +9,7 @@ pub type LengthLength = u16;
 pub type Length = (LengthLocation, LengthLength);
 
 ///This struct keeps lengths of object. It is stacked based to handle nesting.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Lengths(Vec<Length>);
 
 impl Lengths {
