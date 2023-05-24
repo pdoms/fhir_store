@@ -1,8 +1,6 @@
 use std::io::{Read, Write, Seek};
 use std::fs::{OpenOptions, File};
-use std::println;
-
-use super::resource::PAGE_SIZE;
+use super::writer::PAGE_SIZE;
 use crate::error::{Result, Error};
 use crate::parser::jsonparser::JsonParser;
 
@@ -190,7 +188,6 @@ mod test {
         let json = File::open("example.json").unwrap();
         store.create_resource_from_json("patient", json).unwrap();
     }
-
 }
 
 

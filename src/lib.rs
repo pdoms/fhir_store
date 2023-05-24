@@ -1,6 +1,6 @@
 pub mod error;
 pub mod datatypes;
-pub mod resources; 
+pub mod data; 
 pub mod store;
 pub mod parser;
 

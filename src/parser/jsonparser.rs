@@ -1,17 +1,14 @@
-
-use std::println;
-
+use crate::data::datatype::StoreId;
 use crate::error::{Result, Error};
-use crate::store::resource::Resource;
-use crate::resources::ResourceId;
-use crate::datatypes::{KEY, get_key, Store, get_expects, StoreWith};
-
+use crate::store::writer::Resource;
+use crate::data::ResourceId;
+use crate::data::datatype::{key_for_str,ToStoreWith, ToStore, get_expects};
 use super::lengths::Lengths;
 
 pub struct JsonParser<'s> {
     resource: ResourceId,
     src: &'s[u8],
-    key: Option<KEY>,
+    key: Option<StoreId>,
     rsrc: Resource,
     lengths: Lengths,
     len: usize
@@ -49,8 +46,9 @@ impl<'s> JsonParser<'s> {
 
     fn finalize(&mut self) {
         let (loc, length) = self.lengths.pop().unwrap();
-        println!("NOTE SURE!!!! len: {} loc: {loc} length: {length}", self.rsrc.len);
+        println!("NOTE SURE!!!! len: {} loc: {loc} length: {length}", self.rsrc.len());
         self.len = self.rsrc.len();
+        println!("SETTING {length} at {loc}");
         self.rsrc.set_u16_at(length, loc).unwrap();
     }
 
@@ -85,6 +83,29 @@ impl<'s> JsonParser<'s> {
         self.consume_while(|c| !c.is_ascii_whitespace());
     }
 
+    fn consume_string(&mut self) -> Vec<u8> {
+        let mut result = Vec::<u8>::new();
+        while self.peek_char().is_some() {
+            let ch = self.next_char().unwrap();
+            if ch == b'\\' {
+                if let Some(peeked) = self.peek_char() {
+                    match *peeked {
+                        b'"' => {
+                            //result.push(ch);
+                            result.push(self.next_char().unwrap());
+                        },
+                        _ => result.push(ch)
+                    }
+                }
+            } else if ch == b'"' {
+                return result
+            } else {
+                result.push(ch);
+            }
+        }
+        result
+    }
+
     fn consume_while<F>(&mut self, mut p: F) -> Vec<u8> 
     where F: FnMut(u8) -> bool
     {
@@ -98,18 +119,16 @@ impl<'s> JsonParser<'s> {
     }
 
     fn parse_str(&mut self) -> Result<()> {
-        let parsed = self.consume_while(|c| c == b'"');
+        let parsed = self.consume_string();
         println!("Processing String: {s}", s = String::from_utf8(parsed.clone()).unwrap());
         let peek = self.peek_char();
         if peek.is_some() {
             if peek.unwrap() == &b'"' {
                 self.eat_char();
-            } else {
-                return Err(Error::Expected("\"".to_string(), (*peek.unwrap() as char).to_string()))
-            }
+            }  
         }
         if let Some(key) = &self.key {
-            let expects = get_expects(key);
+            let expects = get_expects(*key as u16);
             if let Some(exp) = expects {
                 let dt_str_var = parsed.to_store_with(exp)?;
                 let b = self.rsrc.set_data_type(dt_str_var)?;
@@ -128,19 +147,20 @@ impl<'s> JsonParser<'s> {
         println!("FOUND OBJ");
         //push length item with current writer cursor
         self.lengths.push(self.rsrc.len());
-        println!("{:?}", self.lengths);
         //reserve two for length
         let _ = self.rsrc.reserve_length();
         self.lengths.add_to_last(2);
         let key = self.parse_key()?;
+        println!("FOUND OBJ KEY {key:?}");
         //set dt in Resource
         self.key = Some(key.clone());
-        let b = self.rsrc.set_data_type(key.to_store())?;
+        let b = self.rsrc.set_u16(key as u16)?;
         self.lengths.add_to_last(b as u16);
         Ok(())
     }
 
     fn finish_obj(&mut self) {
+        println!("FINISHING OBJ");
         match self.lengths.pop() {
             Some(len) => {
                 self.rsrc.set_u16_at(len.1, len.0).unwrap();
@@ -153,14 +173,14 @@ impl<'s> JsonParser<'s> {
         };
     }
     
-    fn parse_key(&mut self) -> Result<KEY> {
+    fn parse_key(&mut self) -> Result<StoreId> {
         let key = self.consume_while(|c| c == b'"');
         let key_str = match String::from_utf8(key) {
             Ok(s) => s,
             Err(err) => {return Err(Error::Custom(err.to_string()))}
         };
         println!("Processing key: {key_str}");
-        if let Some(key) = get_key(&key_str.to_ascii_lowercase()) {
+        if let Some(key) = key_for_str(&key_str) {
             println!("KEY ID: {}", key as u16);
             let peek = self.peek_char();
             if peek.is_some() {
@@ -175,6 +195,7 @@ impl<'s> JsonParser<'s> {
             return Err(Error::UnknownKeyInJson(key_str))
         }
     }
+
 
 
     fn parse_signed(&mut self) {}
@@ -206,7 +227,8 @@ impl<'s> JsonParser<'s> {
         // we know that we still have u8s left
         match *self.peek_char().unwrap() {
             b'{'        => {
-                self.eat_chars(2);
+                self.consume_while(|x| x == b'"');
+                self.eat_char();
                 self.parse_obj()?;
                 self.parse()
             },
@@ -238,10 +260,13 @@ impl<'s> JsonParser<'s> {
                     }
                 }
                 let key = self.parse_key()?;
+                println!("KEY AFTER COMMA: {key:?}");
                 //set dt in Resource
                 self.key = Some(key.clone());
-                let b = self.rsrc.set_data_type(key.to_store())?;
-                self.lengths.add_to_last(b as u16);
+                //adding length of key, for flow
+                let a = self.rsrc.set_u16(2)?;
+                let b = self.rsrc.set_u16(key as u16)?;
+                self.lengths.add_to_last((a + b) as u16);
                 self.parse()
             },
             b':' => {
@@ -261,17 +286,30 @@ impl<'s> JsonParser<'s> {
 
 #[cfg(test)]
 mod test {
+    use std::ptr::slice_from_raw_parts;
+
     use super::*;
 
-
-    
     #[test]
     fn test_to_store() {
         let json = r#"{"resourceType": "Patient", "id": "anid", "active": true}"#;
         let mut parser = JsonParser::new_from_slice(json.as_bytes(), "Patient", 1).unwrap();
         assert_eq!(parser.resource, ResourceId::Patient);
         let _  = parser.parse();
-        parser.finalize();
-        assert!(parser.len() > 0);
+        println!("LENGTH: {}", parser.len());
+        println!("DATA: {:?}", unsafe {&*slice_from_raw_parts(parser.rsrc.buffer.as_ptr(), parser.len())})
+    }
+    
+    #[test]
+    fn test_to_store_obj() {
+        let json = r#"{"resourceType": "Patient", "id": "anid", "active": true, "text": {
+    "status" : "generated",
+    "div" : "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p style=\"border: 1px #661aff solid; background-color: #e6e6ff; padding: 10px;\"><b>Jim </b> male, DoB: 1974-12-25 ( Medical record number: 12345\u00a0(use:\u00a0USUAL,\u00a0period:\u00a02001-05-06 --&gt; (ongoing)))</p><hr/><table class=\"grid\"><tr><td style=\"background-color: #f3f5da\" title=\"Record is active\">Active:</td><td>true</td><td style=\"background-color: #f3f5da\" title=\"Known status of Patient\">Deceased:</td><td colspan=\"3\">false</td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Alternate names (see the one above)\">Alt Names:</td><td colspan=\"3\"><ul><li>Peter James Chalmers (OFFICIAL)</li><li>Peter James Windsor (MAIDEN)</li></ul></td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Ways to contact the Patient\">Contact Details:</td><td colspan=\"3\"><ul><li>-unknown-(HOME)</li><li>ph: (03) 5555 6473(WORK)</li><li>ph: (03) 3410 5613(MOBILE)</li><li>ph: (03) 5555 8834(OLD)</li><li>534 Erewhon St PeasantVille, Rainbow, Vic  3999(HOME)</li></ul></td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Nominated Contact: Next-of-Kin\">Next-of-Kin:</td><td colspan=\"3\"><ul><li>Bénédicte du Marché  (female)</li><li>534 Erewhon St PleasantVille Vic 3999 (HOME)</li><li><a href=\"tel:+33(237)998327\">+33 (237) 998327</a></li><li>Valid Period: 2012 --&gt; (ongoing)</li></ul></td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Patient Links\">Links:</td><td colspan=\"3\"><ul><li>Managing Organization: <a href=\"organization-example-gastro.html\">Organization/1</a> &quot;Gastroenterology&quot;</li></ul></td></tr></table></div>"
+  },
+
+    }"#;
+        let mut parser = JsonParser::new_from_slice(json.as_bytes(), "Patient", 1).unwrap();
+        let _ = parser.parse();
+        println!("DATA: {:?}", unsafe {&*slice_from_raw_parts(parser.rsrc.buffer.as_ptr(), parser.len())})
     }
 }

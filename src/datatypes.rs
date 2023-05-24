@@ -142,7 +142,7 @@ impl TryFrom<u16> for DataId {
             26 => Ok(DataId::HUMANNAME),
             27 => Ok(DataId::OBJ),
             28 => Ok(DataId::EMPTY),
-             _ => Err(self::Error::UnknownDataId(i))
+             _ => Err(self::Error::UnknownStoreId(i))
         }
     }
 }

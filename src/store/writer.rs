@@ -1,10 +1,12 @@
-use std::println;
 use std::ptr::NonNull;
 use std::alloc::{Layout, alloc_zeroed};
 use uuid::Uuid;
 use crate::error::{Error, Result};
-use crate::datatypes::{DataType, BU16, DataId, get_u16};
-use crate::resources::ResourceId;
+use crate::data::datatype::{DT, U16B, u16_bytes_from_usize, META_DATA_SIZE};
+use crate::data::ResourceId;
+
+use super::header::Head;
+
 
 pub const PAGE_SIZE: usize = 4096;
 const MEM_CAP: usize = PAGE_SIZE;
@@ -17,13 +19,13 @@ const HEADER_CAP: usize = 72;
 pub struct ResourceHeader {
     page_num: usize,
     rsrc_id: ResourceId,
-    id: DataType,
+    id: DT,
 }
 
 impl ResourceHeader {
     fn new(rsrc_id: ResourceId, page_num: usize) -> Self {
         //TODO should be v7
-        let id = DataType::ID(Box::new(Uuid::new_v4().into_bytes()), DataId::ID as u16, 16u16);
+        let id = DT::ID(Box::new(Uuid::new_v4().into_bytes()));
         Self {
             rsrc_id,
             page_num,
@@ -32,10 +34,10 @@ impl ResourceHeader {
     }
 
     pub fn empty() -> Self {
-        Self { page_num: 0, rsrc_id: ResourceId::Empty, id: DataType::EMPTY }
+        Self { page_num: 0, rsrc_id: ResourceId::Empty, id: DT::EMPTY }
     }
 
-    pub fn with_id(rsrc_id: ResourceId, page_num: usize, id: DataType) -> Self {
+    pub fn with_id(rsrc_id: ResourceId, page_num: usize, id: DT) -> Self {
         Self {
             rsrc_id,
             page_num,
@@ -43,22 +45,27 @@ impl ResourceHeader {
         }
     }
 
-    fn to_buffer(&self) -> Result<[u8; HEADER_CAP]>{
-        let mut src = [0u8; HEADER_CAP];
-        let pn = get_u16(self.page_num)?.to_be_bytes();
-        src[..2].copy_from_slice(&pn);
-        let rid = self.rsrc_id as u16;
-        src[2..4].copy_from_slice(&rid.to_be_bytes());
-        let dt = self.id.clone().get_as_vec();
-        let len = dt.len() + 4;
-        src[4..len].copy_from_slice(&dt);
-        Ok(src)
+}
+
+impl Head for ResourceHeader {
+    fn to_store(&self) -> Result<Vec<u8>>  {
+        let mut dst = Vec::<u8>::with_capacity(MEM_CAP);
+        dst.extend(u16_bytes_from_usize(self.page_num)?);
+        dst.extend((self.rsrc_id as u16).to_be_bytes());
+        dst.extend(self.id.store()?);
+        Ok(dst)
+    }
+
+    fn from_store(data: &[u8]) -> Self {
+        todo!("from store")
     }
 }
 
+
+
 pub struct Resource {
     pub buffer: NonNull<u8>,
-    pub len: usize,
+    pub cursor: usize,
     pub cap: usize,
     pub header: ResourceHeader
 }
@@ -83,7 +90,7 @@ impl Resource {
         };
         
         let header = ResourceHeader::new(id, page_num);
-        let head = header.to_buffer()?;
+        let head = header.to_store()?;
         //write header to buffer
         unsafe {
             let ptr = buffer.as_ptr();
@@ -91,7 +98,7 @@ impl Resource {
         };
         Ok(Self {
             buffer,
-            len: HEADER_CAP,
+            cursor: HEADER_CAP,
             cap: MEM_CAP,
             header
         })
@@ -100,7 +107,7 @@ impl Resource {
 
     ///Returns the current position of the writer cursor.
     pub fn len(&self) -> usize {
-        self.len
+        self.cursor
     }
 
     /// simply advances the cursor, i.e., the len property by 2 bytes. To 
@@ -110,21 +117,15 @@ impl Resource {
     }
 
     fn check_len(&self) -> Result<()> {
-        if self.len > self.cap-1 {
+        if self.cursor > self.cap-1 {
             return Err(Error::SegmentationFault)
         }  
         Ok(())
     }
-    //fn check_read(&self, wants: usize) -> Result<()> {
-    //    if self.read_cursor + wants > self.len {
-    //        return Err(Error::SegmentationFault)
-    //    }  
-    //    Ok(())
-    //}
 
     pub fn advance_by(&mut self, i: usize) -> Result<()> {
         self.check_len()?;
-        self.len += i;
+        self.cursor += i;
         Ok(())
     }
 
@@ -136,30 +137,30 @@ impl Resource {
         Ok(())
     }
 
-    fn push(&mut self, val: u8) -> Result<()> {
-        self.check_len()?;
-        unsafe {
-            self.buffer.as_ptr().add(self.len).write(val);
-        }
-        self.len += 1;
-        Ok(())
-    }
+ //   fn push(&mut self, val: u8) -> Result<()> {
+ //       self.check_len()?;
+ //       unsafe {
+ //           self.buffer.as_ptr().add(self.len).write(val);
+ //       }
+ //       self.len += 1;
+ //       Ok(())
+ //   }
     
 
     fn set(&mut self, src: *mut u8, len: usize)-> Result<usize> {
-        if self.len + len >= self.cap {
+        if self.cursor + len >= self.cap {
             return Err(Error::SegmentationFault)
         }
         unsafe {
             let ptr = self.buffer.as_ptr();
-            ptr.add(self.len).copy_from(src, len);
+            ptr.add(self.cursor).copy_from(src, len);
         }
-        self.len += len;
+        self.cursor += len;
         Ok(len)
     }
 
     fn get(&mut self, i: usize) -> Result<u8> {
-        self.check_len()?;
+         self.check_len()?;
         let val = unsafe {
             let ptr = self.buffer.as_ptr();
             ptr.add(i).read()
@@ -167,29 +168,23 @@ impl Resource {
         Ok(val)
     }
     pub fn set_u16(&mut self, v: u16) -> Result<usize> {
-        println!("SETTING: {v}");
         self.set(v.to_be_bytes().as_mut_ptr(), 2)
     }
 
-    pub fn set_bu16(&mut self, mut v: BU16) -> Result<usize> {
+    pub fn set_bu16(&mut self, mut v: U16B) -> Result<usize> {
         self.set(v.as_mut_ptr(), 2)
     }
+
     pub fn set_u16_at(&mut self, v: u16, i: usize) -> Result<()> {
         let bytes = v.to_be_bytes();
         self.set_index(i, bytes[0])?;
         self.set_index(i+1, bytes[1])
     }
 
-    pub fn set_data_type(&mut self, dt: DataType) -> Result<usize> {
-        //unpack
-        let (mut value, id, len) = dt.to_memory();
-        // set len
-        self.set_u16(len)?;
-        // set id
-        self.set_u16(id)?;
-        // set data
-        self.set(value.as_mut_ptr(), len as usize)?;
-        Ok(len as usize + 4)
+    pub fn set_data_type(&mut self, dt: DT) -> Result<usize> {
+        let len = dt.store_len() + META_DATA_SIZE;
+        self.set(dt.store()?.as_mut_ptr(), len)?;
+        Ok(len)
     }
 
     //pub fn read_u16(&mut self) -> Result<u16> {
@@ -221,12 +216,33 @@ impl Resource {
 
 #[cfg(test)]
 mod test {
+    use crate::data::datatype::ToStore;
+
     use super::*;
 
     #[test]
     fn resource_header() {
         let header = ResourceHeader::new(ResourceId::Patient, 1);
-        header.to_buffer().unwrap();
+        assert_eq!(header.page_num, 1);
+        assert_eq!(header.rsrc_id, ResourceId::Patient);
+        assert_eq!(header.id.store_len(), 16);
+    }
+
+    #[test]
+    fn resource_writer() {
+        let mut writer = Resource::new(ResourceId::Patient, 1).unwrap();
+        assert_eq!(writer.len(), HEADER_CAP);
+        writer.reserve_length().unwrap();
+        assert_eq!(writer.cursor, HEADER_CAP+2);
+        writer.set_index(HEADER_CAP+3, 1).unwrap();
+        assert_eq!(writer.get(HEADER_CAP+3).unwrap(), 1);
+        writer.set_u16_at(1, HEADER_CAP).unwrap();
+        assert_eq!(writer.get(HEADER_CAP).unwrap(), 0);
+        assert_eq!(writer.get(HEADER_CAP+1).unwrap(), 1);
+        assert_eq!(writer.set([2,2,2,2,2].as_mut_ptr(), 5).unwrap(), 5);
+        assert_eq!(writer.get(HEADER_CAP+5).unwrap(), 2);
+        let datum = true.to_store();
+        assert_eq!(writer.set_data_type(datum).unwrap(), 5);
     }
 }
 

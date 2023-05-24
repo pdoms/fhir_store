@@ -7,7 +7,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     Custom(String),
     Expected(String, String),
-    UnknownDataId(u16),
+    UnknownStoreId(u16),
     UnknownResourceStr(String),
     UnknownResourceId(u16),
     UnknownSyntaxToken(u8),
@@ -28,7 +28,7 @@ impl Display for Error {
         match self {
             Error::Custom(msg)             => formatter.write_str(msg),
             Error::Expected(exp, got)      => formatter.write_fmt(format_args!("PARSING: expected '{exp}' got '{got}'")),
-            Error::UnknownDataId(id)       => formatter.write_fmt(format_args!("CONVERSION: unknown DataId: '{id}'")),
+            Error::UnknownStoreId(id)       => formatter.write_fmt(format_args!("CONVERSION: unknown StoreId: '{id}'")),
             Error::UnknownResourceStr(rec) => formatter.write_fmt(format_args!("CONVERSION: unknown ResourceId string: '{rec}'")),
             Error::UnknownResourceId(rec)  => formatter.write_fmt(format_args!("CONVERSION: unknown ResourceId: '{rec}'")),
             Error::UnknownSyntaxToken(tkn) => formatter.write_fmt(format_args!("PARSING: unknown syntax token '{}'", *tkn as char)),

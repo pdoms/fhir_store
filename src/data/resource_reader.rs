@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
-use crate::store::resource::{PAGE_SIZE, ResourceHeader}; 
+use crate::store::writer::{PAGE_SIZE, ResourceHeader}; 
 use super::ResourceId;
 use crate::datatypes::{StoreWith, DataType};
+use crate::datatypes::DataId;
 
 
 const UUID_LEN: usize = 16;
@@ -34,8 +35,8 @@ impl ResourceReader {
         let pn = self.read_u16()? as usize;
         let rsrc_id = ResourceId::try_from(self.read_u16()?)?;
         let id = self.read_n(16)?.as_slice().to_store_with(DataId::ID)?;
-        let header = ResourceHeader::with_id(rsrc_id.clone(), pn, id.clone());
-        self.header = header;
+        //let header = ResourceHeader::with_id(rsrc_id.clone(), pn, id.clone());
+        //self.header = header;
         self.cursor = 72;
         Ok(())
     }
@@ -150,7 +151,7 @@ mod test {
         let page = store.get_page_copy(1);
         println!("{page:?}");
         let mut reader = ResourceReader::from_store_page(store.get_page_copy(1).as_mut_ptr()).unwrap();
-        let read = reader.to_json().unwrap();
-        println!("JSON STRING {}", String::from_utf8(read).unwrap())
+        //let read = reader.to_json().unwrap();
+        //println!("JSON STRING {}", String::from_utf8(read).unwrap())
     }
 }
