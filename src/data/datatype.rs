@@ -311,6 +311,7 @@ impl DTR {
     pub fn from_store_with_tree(id: u16, tree: Tree) -> Result<Self> {
         match id {
             27 => Ok(DTR::NARRATIVE(tree)),
+            49 => Ok(DTR::HUMANNAME(tree)),
              _ => Err(self::Error::UnknownStoreId(id))
         }
     }
@@ -545,6 +546,17 @@ static HAS_SUPS: phf::Set<u16> = phf_set! {
     48u16  //NARRATIVE
 };
 
+pub fn get_expected(key: u16) -> Option<StoreId> {
+    if let Some(exp) = get_expects(key) {
+        let exp_u = exp as u16;
+        if has_sub(exp_u) {
+            return get_from_sub(key, exp_u)
+        } else {
+            return Some(exp)
+        }
+    }
+    None
+}
 
 pub fn key_for_str(k: &str) -> Option<StoreId> {
     KEYS.get(k.to_ascii_lowercase().as_str()).cloned()

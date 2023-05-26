@@ -32,6 +32,7 @@ impl Lengths {
 
     /// adds to the last [`Length`] if it exists and returns true, otherwise it returns false.
     pub fn add_to_last(&mut self, val: u16) -> bool {
+        println!("\tADDING {val} to last length");
         if self.len() > 0 {
             // we know that there is a last item
             let last = self.0.last_mut().unwrap();
@@ -46,18 +47,14 @@ impl Lengths {
     ///underlying [`Vec`]. Otherwise, instead of setting the initial length to 0, it is set to the
     ///length of the previous item.
     pub fn push(&mut self, location: usize) {
-        if self.len() == 0 {
-            self.0.push((location, 0));
-        } else {
-            // we know that there is a last item
-            let last = self.last().unwrap();
-            self.0.push((location, last.1))
-        }
+        println!("\tADDING new length at {location}");
+        self.0.push((location, 0));
     }
 
     ///Pops the last element from the stack and returns it in an [`Option`]. In additon, it adds the popped length
     ///to the element that is now on top of the stack. If the stack is empty [`None`] is returned.
     pub fn pop(&mut self) -> Option<Length> {
+        println!("\tpopping last length");
         if self.len() > 0 {
             // we know that there is a last item
             let val = self.0.pop().unwrap();
@@ -68,3 +65,27 @@ impl Lengths {
         }
     }
 }
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn lengths_collector_parser() {
+        let mut lens = Lengths(vec![]);
+        lens.push(0);
+        lens.add_to_last(2);
+        lens.add_to_last(10);
+        lens.push(12);
+        lens.add_to_last(2);
+        lens.add_to_last(4);
+        assert_eq!(lens.pop(), Some((12, 6)));
+        assert_eq!(lens.last(), Some((0, 18)));
+        lens.pop();
+        assert!(lens.pop().is_none());
+        assert_eq!(lens.len(), 0);
+    }
+}
+
+

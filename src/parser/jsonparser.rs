@@ -1,4 +1,4 @@
-use crate::data::datatype::{StoreId, has_sub, get_from_sub, u16_from_usize};
+use crate::data::datatype::{StoreId, has_sub, get_from_sub, u16_from_usize, get_expected};
 use crate::error::{Result, Error};
 use crate::store::writer::Resource;
 use crate::data::ResourceId;
@@ -54,8 +54,10 @@ impl<'s> JsonParser<'s> {
     }
 
     fn finalize(&mut self) {
+        println!("LENGTHS: !{:?}", self.lengths);
         let (loc, length) = self.lengths.pop().unwrap();
-        println!("NOTE SURE!!!! len: {} loc: {loc} length: {length}", self.rsrc.len());
+        let diff = self.rsrc.len() - 72 - length as usize;
+        println!("NOT SURE!!!! len: {} loc: {loc} length: {length} diff: {diff}", self.rsrc.len());
         self.len = self.rsrc.len();
         println!("SETTING {length} at {loc}");
         self.rsrc.set_u16_at(length, loc).unwrap();
@@ -128,21 +130,10 @@ impl<'s> JsonParser<'s> {
     }
 
 
-    fn get_expected(&self, key: u16) -> Option<StoreId> {
-        if let Some(exp) = get_expects(key) {
-            let exp_u = exp as u16;
-            if has_sub(exp_u) {
-                return get_from_sub(key, exp_u)
-            } else {
-                return Some(exp)
-            }
-        }
-        None
-    }
 
     fn parse_str(&mut self) -> Result<()> {
         if let Some(key) = &self.key {
-            let expects = self.get_expected((*key).into());
+            let expects = get_expected((*key).into());
             if let Some(exp) = expects {
                 if exp.is_primitive() {
                     let parsed = self.consume_string();
@@ -182,11 +173,12 @@ impl<'s> JsonParser<'s> {
                     let len_at = self.rsrc.len();
                     self.rsrc.reserve_length()?;
                     self.rsrc.set_u16(exp.into())?;
-                    let mut total_len: u16 = 0;
+                    let mut total_len: u16 = 2;
                     for value in values {
                         //len and data only 
                         let dt = value.to_store_with(exp)?;
-                        self.rsrc.set_data_type(dt)?;
+                        let b = self.rsrc.set_data_type(dt)?;
+                        total_len += b as u16;
                     }
                     //end of list here as len = 2, end of list, and list type 
                     //where data usually goes
@@ -243,7 +235,7 @@ impl<'s> JsonParser<'s> {
     fn parse_list(&mut self) -> Result<()> {
         println!("FOUND LIST");
         self.lengths.push(self.rsrc.len());
-        let _ =self.rsrc.reserve_length();
+        let _ = self.rsrc.reserve_length();
         self.lengths.add_to_last(2);
         if let Some(key) = self.key {
             let b = self.rsrc.set_u16(key as u16)?;
@@ -403,15 +395,37 @@ mod test {
         assert_eq!(parser.resource, ResourceId::Patient);
         let _  = parser.parse();
         println!("LENGTH: {}", parser.len());
+        println!("DATA: {:?}", unsafe {&*slice_from_raw_parts(parser.rsrc.buffer.as_ptr(), parser.len())});
+        let json_obj = r#"{"resourceType": "Patient", "id": "anid", "text": {"status": "generated", "div": "xhtml"},"active": true}"#;
+        let mut parser = JsonParser::new_from_slice(json_obj.as_bytes(), "Patient", 1).unwrap();
+        assert_eq!(parser.resource, ResourceId::Patient);
+        let _  = parser.parse();
+        println!("LENGTH: {}", parser.len());
+        println!("DATA: {:?}", unsafe {&*slice_from_raw_parts(parser.rsrc.buffer.as_ptr(), parser.len())});
+        let json_list = r#"{"resourceType": "Patient", "id": "anid", "name": [{"use" : "official", "family" : "Chalmers", "given" : ["Peter", "James"]}, {"use" : "usual", "given" : ["Jim"]}],"active": true}"#;
+        let mut parser = JsonParser::new_from_slice(json_list.as_bytes(), "Patient", 1).unwrap();
+        assert_eq!(parser.resource, ResourceId::Patient);
+        let _  = parser.parse();
+        println!("LENGTH: {}", parser.len());
         println!("DATA: {:?}", unsafe {&*slice_from_raw_parts(parser.rsrc.buffer.as_ptr(), parser.len())})
     }
     
     #[test]
-    fn test_to_store_obj() {
+    fn to_store_obj() {
         let json = r#"{"resourceType": "Patient", "id": "anid", "active": true, "text": {
     "status" : "generated",
     "div" : "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p style=\"border: 1px #661aff solid; background-color: #e6e6ff; padding: 10px;\"><b>Jim </b> male, DoB: 1974-12-25 ( Medical record number: 12345\u00a0(use:\u00a0USUAL,\u00a0period:\u00a02001-05-06 --&gt; (ongoing)))</p><hr/><table class=\"grid\"><tr><td style=\"background-color: #f3f5da\" title=\"Record is active\">Active:</td><td>true</td><td style=\"background-color: #f3f5da\" title=\"Known status of Patient\">Deceased:</td><td colspan=\"3\">false</td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Alternate names (see the one above)\">Alt Names:</td><td colspan=\"3\"><ul><li>Peter James Chalmers (OFFICIAL)</li><li>Peter James Windsor (MAIDEN)</li></ul></td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Ways to contact the Patient\">Contact Details:</td><td colspan=\"3\"><ul><li>-unknown-(HOME)</li><li>ph: (03) 5555 6473(WORK)</li><li>ph: (03) 3410 5613(MOBILE)</li><li>ph: (03) 5555 8834(OLD)</li><li>534 Erewhon St PeasantVille, Rainbow, Vic  3999(HOME)</li></ul></td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Nominated Contact: Next-of-Kin\">Next-of-Kin:</td><td colspan=\"3\"><ul><li>Bénédicte du Marché  (female)</li><li>534 Erewhon St PleasantVille Vic 3999 (HOME)</li><li><a href=\"tel:+33(237)998327\">+33 (237) 998327</a></li><li>Valid Period: 2012 --&gt; (ongoing)</li></ul></td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Patient Links\">Links:</td><td colspan=\"3\"><ul><li>Managing Organization: <a href=\"organization-example-gastro.html\">Organization/1</a> &quot;Gastroenterology&quot;</li></ul></td></tr></table></div>"
-  },"name" : [{
+  }
+}"#;
+        let mut parser = JsonParser::new_from_slice(json.as_bytes(), "Patient", 1).unwrap();
+        let _ = parser.parse();
+        println!("DATA: {:?}", unsafe {&*slice_from_raw_parts(parser.rsrc.buffer.as_ptr(), parser.len())})
+}
+
+
+#[test]
+fn parse_json_list() {
+    let json = r#"{"name" : [{
     "use" : "official",
     "family" : "Chalmers",
     "given" : ["Peter",
@@ -426,10 +440,21 @@ mod test {
     "family" : "Windsor",
     "given" : ["Peter",
         "James"]
-  }]
-}"#;
+  }]}"#;
         let mut parser = JsonParser::new_from_slice(json.as_bytes(), "Patient", 1).unwrap();
         let _ = parser.parse();
         println!("DATA: {:?}", unsafe {&*slice_from_raw_parts(parser.rsrc.buffer.as_ptr(), parser.len())})
-    }
 }
+
+
+
+
+}
+
+
+
+
+
+
+
+
