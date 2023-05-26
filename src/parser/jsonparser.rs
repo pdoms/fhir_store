@@ -1,9 +1,16 @@
-use crate::data::datatype::StoreId;
+use crate::data::datatype::{StoreId, has_sub, get_from_sub, u16_from_usize};
 use crate::error::{Result, Error};
 use crate::store::writer::Resource;
 use crate::data::ResourceId;
 use crate::data::datatype::{key_for_str,ToStoreWith, ToStore, get_expects};
 use super::lengths::Lengths;
+
+#[derive(PartialEq, Eq)]
+enum CompoundId {
+    OBJ,
+    LIST,
+    NONE
+}
 
 pub struct JsonParser<'s> {
     resource: ResourceId,
@@ -11,7 +18,8 @@ pub struct JsonParser<'s> {
     key: Option<StoreId>,
     rsrc: Resource,
     lengths: Lengths,
-    len: usize
+    len: usize,
+    compounds: Vec<CompoundId>
 }
 
 impl<'s> JsonParser<'s> {
@@ -36,7 +44,8 @@ impl<'s> JsonParser<'s> {
             key: None,
             rsrc,
             lengths,
-            len: 0
+            len: 0,
+            compounds: Vec::<CompoundId>::new()
         })
     }
 
@@ -118,28 +127,83 @@ impl<'s> JsonParser<'s> {
         result
     }
 
-    fn parse_str(&mut self) -> Result<()> {
-        let parsed = self.consume_string();
-        println!("Processing String: {s}", s = String::from_utf8(parsed.clone()).unwrap());
-        let peek = self.peek_char();
-        if peek.is_some() {
-            if peek.unwrap() == &b'"' {
-                self.eat_char();
-            }  
+
+    fn get_expected(&self, key: u16) -> Option<StoreId> {
+        if let Some(exp) = get_expects(key) {
+            let exp_u = exp as u16;
+            if has_sub(exp_u) {
+                return get_from_sub(key, exp_u)
+            } else {
+                return Some(exp)
+            }
         }
+        None
+    }
+
+    fn parse_str(&mut self) -> Result<()> {
         if let Some(key) = &self.key {
-            let expects = get_expects(*key as u16);
+            let expects = self.get_expected((*key).into());
             if let Some(exp) = expects {
-                let dt_str_var = parsed.to_store_with(exp)?;
-                let b = self.rsrc.set_data_type(dt_str_var)?;
-                self.lengths.add_to_last(b as u16);
+                if exp.is_primitive() {
+                    let parsed = self.consume_string();
+                    println!("Processing String: {s}", s = String::from_utf8(parsed.clone()).unwrap());
+                    let peek = self.peek_char();
+                    if peek.is_some() {
+                        if peek.unwrap() == &b'"' {
+                            self.eat_char();
+                        }  
+                    }
+                    let dt_str_var = parsed.to_store_with(exp)?;
+                    let b = self.rsrc.set_data_type(dt_str_var)?;
+                    self.lengths.add_to_last(b as u16);
+                } else {
+                    let mut values = Vec::<Vec<u8>>::new();
+                    loop {
+                        let parsed = self.consume_string();
+                        println!("Processing LString: {s}", s = String::from_utf8(parsed.clone()).unwrap());
+                        values.push(parsed);
+                        self.eat_ws();
+                        let peek = self.peek_char();
+                        if peek.is_some() {
+                            if peek.unwrap() == &b',' {
+                                self.eat_char();
+                                self.eat_ws();
+                                let peek = self.peek_char(); 
+                                if peek.is_some() && peek.unwrap() == &b'"' {
+                                    self.eat_char()
+                                }
+                            } else {
+                                break;
+                            } 
+                        } else {
+                            break;
+                        }
+                    }
+                    let len_at = self.rsrc.len();
+                    self.rsrc.reserve_length()?;
+                    self.rsrc.set_u16(exp.into())?;
+                    let mut total_len: u16 = 0;
+                    for value in values {
+                        //len and data only 
+                        let dt = value.to_store_with(exp)?;
+                        self.rsrc.set_data_type(dt)?;
+                    }
+                    //end of list here as len = 2, end of list, and list type 
+                    //where data usually goes
+                    self.rsrc.set_u16(2)?;
+                    let b = self.rsrc.set_u16(StoreId::ENDOFLIST.into())?;
+                    //subtracting 2 as we don't write the store id to the buffer 
+                    total_len += u16_from_usize(b-2)?;
+                    self.rsrc.set_u16_at(total_len, len_at)?;
+                    self.lengths.add_to_last(total_len);
+                }
                 self.key = None;
                 Ok(())
             } else {
                 todo!("NIY2");
             }
         } else {
-            todo!("NIY3");
+            todo!("NIY3 Key: {:?}", self.key);
         }
     }
 
@@ -151,6 +215,7 @@ impl<'s> JsonParser<'s> {
         let _ = self.rsrc.reserve_length();
         self.lengths.add_to_last(2);
         let key = self.parse_key()?;
+        self.compounds.push(CompoundId::OBJ);
         println!("FOUND OBJ KEY {key:?}");
         //set dt in Resource
         self.key = Some(key.clone());
@@ -161,6 +226,8 @@ impl<'s> JsonParser<'s> {
 
     fn finish_obj(&mut self) {
         println!("FINISHING OBJ");
+        //TODO check if ok to pop
+        self.compounds.pop();
         match self.lengths.pop() {
             Some(len) => {
                 self.rsrc.set_u16_at(len.1, len.0).unwrap();
@@ -171,6 +238,36 @@ impl<'s> JsonParser<'s> {
             }
 
         };
+    }
+
+    fn parse_list(&mut self) -> Result<()> {
+        println!("FOUND LIST");
+        self.lengths.push(self.rsrc.len());
+        let _ =self.rsrc.reserve_length();
+        self.lengths.add_to_last(2);
+        if let Some(key) = self.key {
+            let b = self.rsrc.set_u16(key as u16)?;
+            println!("LIST KEY: {}", key as u16);
+            self.lengths.add_to_last(b as u16);
+            self.compounds.push(CompoundId::LIST);
+        }
+        Ok(())
+    }
+
+
+    fn finish_list(&mut self) {
+        println!("FINISHING LIIST");
+        //TODO check if ok to pop
+        self.compounds.pop();
+        match self.lengths.pop() {
+            Some(len) => {
+                self.rsrc.set_u16_at(len.1, len.0).unwrap();
+                self.eat_char();
+            },
+            None => {
+                panic!("None outcome for length shortening not yet implemented")
+            }
+        }
     }
     
     fn parse_key(&mut self) -> Result<StoreId> {
@@ -226,23 +323,30 @@ impl<'s> JsonParser<'s> {
         }
         // we know that we still have u8s left
         match *self.peek_char().unwrap() {
-            b'{'        => {
+            b'{' => {
                 self.consume_while(|x| x == b'"');
                 self.eat_char();
                 self.parse_obj()?;
                 self.parse()
             },
-            b'}'        => {
+            b'}' => {
                 self.finish_obj();
                 self.parse()
             },
-            b'"'        => {
+            b'"' => {
                 self.eat_char();
                 self.parse_str()?;
                 self.parse()
             },
-            //b'['        => {},
-            //b']'        => {},
+            b'[' => {
+               self.eat_char();
+               self.parse_list()?;
+               self.parse() 
+            },
+            b']' => {
+                self.finish_list();
+                self.parse()
+            },
             //b'0'..=b'9' => {},
             //b'-'        => {},
             b't' | b'f' => {
@@ -252,21 +356,23 @@ impl<'s> JsonParser<'s> {
             b',' => {
                 self.eat_char();
                 self.eat_ws();
-                if let Some(ch) = self.peek_char() {
-                    if *ch == b'"' {
-                        self.eat_char();
-                    } else {
-                        return Err(Error::Expected("\"".to_string(), ch.to_string()))
+                if self.compounds.len() > 0 && self.compounds.last().unwrap() == &CompoundId::OBJ {
+                    if let Some(ch) = self.peek_char() {
+                        if *ch == b'"' {
+                            self.eat_char();
+                        } else {
+                            return Err(Error::Expected("\"".to_string(), ch.to_string()))
+                        }
                     }
+                    let key = self.parse_key()?;
+                    println!("KEY AFTER COMMA: {key:?}");
+                    //set dt in Resource
+                    self.key = Some(key.clone());
+                    //adding length of key, for flow
+                    let a = self.rsrc.set_u16(2)?;
+                    let b = self.rsrc.set_u16(key as u16)?;
+                    self.lengths.add_to_last((a + b) as u16);
                 }
-                let key = self.parse_key()?;
-                println!("KEY AFTER COMMA: {key:?}");
-                //set dt in Resource
-                self.key = Some(key.clone());
-                //adding length of key, for flow
-                let a = self.rsrc.set_u16(2)?;
-                let b = self.rsrc.set_u16(key as u16)?;
-                self.lengths.add_to_last((a + b) as u16);
                 self.parse()
             },
             b':' => {
@@ -305,9 +411,23 @@ mod test {
         let json = r#"{"resourceType": "Patient", "id": "anid", "active": true, "text": {
     "status" : "generated",
     "div" : "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p style=\"border: 1px #661aff solid; background-color: #e6e6ff; padding: 10px;\"><b>Jim </b> male, DoB: 1974-12-25 ( Medical record number: 12345\u00a0(use:\u00a0USUAL,\u00a0period:\u00a02001-05-06 --&gt; (ongoing)))</p><hr/><table class=\"grid\"><tr><td style=\"background-color: #f3f5da\" title=\"Record is active\">Active:</td><td>true</td><td style=\"background-color: #f3f5da\" title=\"Known status of Patient\">Deceased:</td><td colspan=\"3\">false</td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Alternate names (see the one above)\">Alt Names:</td><td colspan=\"3\"><ul><li>Peter James Chalmers (OFFICIAL)</li><li>Peter James Windsor (MAIDEN)</li></ul></td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Ways to contact the Patient\">Contact Details:</td><td colspan=\"3\"><ul><li>-unknown-(HOME)</li><li>ph: (03) 5555 6473(WORK)</li><li>ph: (03) 3410 5613(MOBILE)</li><li>ph: (03) 5555 8834(OLD)</li><li>534 Erewhon St PeasantVille, Rainbow, Vic  3999(HOME)</li></ul></td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Nominated Contact: Next-of-Kin\">Next-of-Kin:</td><td colspan=\"3\"><ul><li>Bénédicte du Marché  (female)</li><li>534 Erewhon St PleasantVille Vic 3999 (HOME)</li><li><a href=\"tel:+33(237)998327\">+33 (237) 998327</a></li><li>Valid Period: 2012 --&gt; (ongoing)</li></ul></td></tr><tr><td style=\"background-color: #f3f5da\" title=\"Patient Links\">Links:</td><td colspan=\"3\"><ul><li>Managing Organization: <a href=\"organization-example-gastro.html\">Organization/1</a> &quot;Gastroenterology&quot;</li></ul></td></tr></table></div>"
+  },"name" : [{
+    "use" : "official",
+    "family" : "Chalmers",
+    "given" : ["Peter",
+        "James"]
   },
-
-    }"#;
+  {
+    "use" : "usual",
+    "given" : ["Jim"]
+  },
+  {
+    "use" : "maiden",
+    "family" : "Windsor",
+    "given" : ["Peter",
+        "James"]
+  }]
+}"#;
         let mut parser = JsonParser::new_from_slice(json.as_bytes(), "Patient", 1).unwrap();
         let _ = parser.parse();
         println!("DATA: {:?}", unsafe {&*slice_from_raw_parts(parser.rsrc.buffer.as_ptr(), parser.len())})

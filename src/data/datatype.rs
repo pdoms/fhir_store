@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use phf::phf_map;
+use phf::{phf_map, phf_set};
 
 use super::tree::Tree;
 
@@ -10,6 +10,7 @@ pub type U16B = [u8;2];
 type BYTES = Box<[u8]>;
 
 const PRIMITIVE_MAX: u16 = 20;
+const PRIMITIVE_LIST_MAX: u16 = 41;
 const DT_MAX: u16 = 256;
 
 const FHIR_ID_LEN: usize = 64;
@@ -43,6 +44,27 @@ pub enum DT {
     URL(BYTES),
     UUID(BYTES),
     UNSIGNEDINT(BYTES),
+    LMISC(BYTES),
+    LBASE64BINARY(BYTES),
+    LBOOL(BYTES),
+    LCANONICAL(BYTES),
+    LCODE(BYTES),
+    LDATE(BYTES),
+    LDATETIME(BYTES),
+    LDEC(BYTES),
+    LID(BYTES),
+    LINSTANT(BYTES),
+    LINTEGER(BYTES),
+    LINTEGER64(BYTES),
+    LMARKDOWN(BYTES),
+    LOID(BYTES),
+    LSTRING(BYTES),
+    LPOSITIVEINT(BYTES),
+    LTIME(BYTES),
+    LURI(BYTES),
+    LURL(BYTES),
+    LUUID(BYTES),
+    LUNSIGNEDINT(BYTES),
     IDENTIFIER,
     HUMANNAME,
     NARRATIVE,
@@ -79,7 +101,29 @@ pub enum StoreId {
     URL,
     UUID,
     UNSIGNEDINT,
+    LMISC,
+    LBASE64BINARY,
+    LBOOL,
+    LCANONICAL,
+    LCODE,
+    LDATE,
+    LDATETIME,
+    LDEC,
+    LID,
+    LINSTANT,
+    LINTEGER,
+    LINTEGER64,
+    LMARKDOWN,
+    LOID,
+    LSTRING,
+    LPOSITIVEINT,
+    LTIME,
+    LURI,
+    LURL,
+    LUUID,
+    LUNSIGNEDINT,
     LIST,
+    ENDOFLIST,
     OBJ,
     EMPTY,
     RSRC,
@@ -95,8 +139,12 @@ pub enum StoreId {
     Name,
     Text,
     Status,
-    Div
-
+    Div,
+    Use,
+    Family,
+    Given,
+    Prefix,
+    Suffix,
 }
 
 
@@ -123,25 +171,29 @@ pub enum DTR {
     URL(BYTES),
     UUID(BYTES),
     UNSIGNEDINT(BYTES),
-    LIST,
+    LIST(Vec<DTR>),
     OBJ(Tree),
     EMPTY,
     RSRC(Tree),
     RSRCT(String),
     NARRATIVE(Tree),
+    HUMANNAME(Tree)
 }
 
 
 impl DT {
     pub fn store(&self) -> Result<Vec<u8>> {
         match self {
-            DT::BOOL(val) => dt_serialized(val.clone(), StoreId::BOOL),
-            DT::ID(val) => dt_serialized(val.clone(), StoreId::ID),
-            DT::STRING(val) => dt_serialized(val.clone(), StoreId::STRING),
+            DT::BOOL(val) => dt_serialized(val.clone(), Some(StoreId::BOOL)),
+            DT::ID(val) => dt_serialized(val.clone(), Some(StoreId::ID)),
+            DT::STRING(val) => dt_serialized(val.clone(), Some(StoreId::STRING)),
+            DT::LSTRING(val) => dt_serialized(val.clone(), None),
             _ => unimplemented!("DT -> store unimplemented for ") 
         }
     }
 
+
+//TODO impl into<u16> for StoreId
     pub fn store_len(&self) -> usize {
         match self {
             DT::BOOL(val) => val.len(),
@@ -160,8 +212,18 @@ impl StoreId {
         (*self as u16) <= PRIMITIVE_MAX
     }
 
+    pub fn is_primitive_list(&self) -> bool {
+        (*self as u16) > PRIMITIVE_MAX && (*self as u16) <= PRIMITIVE_LIST_MAX
+    }
+
     pub fn is_general_purpose(&self) -> bool {
-        (*self as u16) > PRIMITIVE_MAX && (*self as u16) < DT_MAX
+        (*self as u16) > PRIMITIVE_LIST_MAX && (*self as u16) < DT_MAX
+    }
+}
+
+impl Into<u16> for StoreId {
+    fn into(self) -> u16 {
+        self as u16
     }
 }
 
@@ -190,13 +252,35 @@ impl TryFrom<u16> for StoreId {
             18 => Ok(StoreId::URL),
             19 => Ok(StoreId::UUID),
             20 => Ok(StoreId::UNSIGNEDINT),
-            21 => Ok(StoreId::LIST),
-            22 => Ok(StoreId::OBJ),
-            23 => Ok(StoreId::EMPTY),
-            24 => Ok(StoreId::RSRC),
-            25 => Ok(StoreId::IDENTIFIER),
-            26 => Ok(StoreId::HUMANNAME),
-            27 => Ok(StoreId::NARRATIVE),
+            21 => Ok(StoreId::LMISC),
+            22 => Ok(StoreId::LBASE64BINARY),
+            23 => Ok(StoreId::LBOOL),
+            24 => Ok(StoreId::LCANONICAL),
+            25 => Ok(StoreId::LCODE),
+            26 => Ok(StoreId::LDATE),
+            27 => Ok(StoreId::LDATETIME),
+            28 => Ok(StoreId::LDEC),
+            29 => Ok(StoreId::LID),
+            30 => Ok(StoreId::LINSTANT),
+            31 => Ok(StoreId::LINTEGER),
+            32 => Ok(StoreId::LINTEGER64),
+            33 => Ok(StoreId::LMARKDOWN),
+            34 => Ok(StoreId::LOID),
+            35 => Ok(StoreId::LSTRING),
+            36 => Ok(StoreId::LPOSITIVEINT),
+            37 => Ok(StoreId::LTIME),
+            38 => Ok(StoreId::LURI),
+            39 => Ok(StoreId::LURL),
+            40 => Ok(StoreId::LUUID),
+            41 => Ok(StoreId::LUNSIGNEDINT),
+            42 => Ok(StoreId::LIST),
+            43 => Ok(StoreId::ENDOFLIST),
+            44 => Ok(StoreId::OBJ),
+            45 => Ok(StoreId::EMPTY),
+            46 => Ok(StoreId::RSRC),
+            47 => Ok(StoreId::IDENTIFIER),
+            48 => Ok(StoreId::HUMANNAME),
+            49 => Ok(StoreId::NARRATIVE),
             257 => Ok(StoreId::ResourceType),
             258 => Ok(StoreId::Id),
             259 => Ok(StoreId::Active),
@@ -205,6 +289,9 @@ impl TryFrom<u16> for StoreId {
             262 => Ok(StoreId::Text),
             263 => Ok(StoreId::Status),
             264 => Ok(StoreId::Div),
+            266 => Ok(StoreId::Given),
+            267 => Ok(StoreId::Prefix),
+            268 => Ok(StoreId::Suffix),
              _ => Err(self::Error::UnknownStoreId(i))
         }
     }
@@ -374,15 +461,20 @@ impl ToStoreWith for Vec<u8> {
                     return Err(Error::IdMaxLen)
                 } else {
                     Ok(DT::ID(Box::from(self.as_slice())))
-              }
-          },
+                }
+            },
             StoreId::STRING => {
+                Ok(DT::STRING(Box::from(self.as_slice())))
+            },
+            StoreId::LSTRING => {
                 Ok(DT::STRING(Box::from(self.as_slice())))
             }
           _ => unimplemented!("{id:?} not implemented yet for &[u8]")
         }
     }
 }
+
+
 //################## Lookup tables ###########################################
 
 static KEYS: phf::Map<&'static str, StoreId> = phf_map! {
@@ -395,6 +487,11 @@ static KEYS: phf::Map<&'static str, StoreId> = phf_map! {
     "text"         => StoreId::Text,
     "status"       => StoreId::Status,
     "div"          => StoreId::Div,
+    "use"          => StoreId::Use,
+    "family"       => StoreId::Family,
+    "given"        => StoreId::Given,
+    "prefix"       => StoreId::Prefix,
+    "suffix"       => StoreId::Suffix,
 };
 
 static KEYS_INVERT: phf::Map<u16, &'static [u8]> = phf_map! {
@@ -403,9 +500,14 @@ static KEYS_INVERT: phf::Map<u16, &'static [u8]> = phf_map! {
     259u16 => b"active",       //active
     260u16 => b"identifier",   //identifier
     261u16 => b"name",         //name
-    262u16 => b"text",    //narrative
+    262u16 => b"text",         //narrative
     263u16 => b"status",       //status
     264u16 => b"div",          //div
+    265u16 => b"use",          //use
+    266u16 => b"family",       //family
+    267u16 => b"given",        //given
+    268u16 => b"prefix",       //prefix
+    269u16 => b"suffix",       //suffix
 };
 
 static EXPECTS: phf::Map<u16, StoreId> = phf_map! {
@@ -417,6 +519,30 @@ static EXPECTS: phf::Map<u16, StoreId> = phf_map! {
     262u16 => StoreId::NARRATIVE,  //narrative
     263u16 => StoreId::STRING,     //status
     264u16 => StoreId::STRING,     //div
+    265u16 => StoreId::STRING,     //use
+    266u16 => StoreId::STRING,     //family
+    267u16 => StoreId::LSTRING,    //given,
+    268u16 => StoreId::LSTRING,    //prefix
+    269u16 => StoreId::LSTRING     //suffix
+};
+
+static HUMANNAME_EXPECTS: phf::Map<u16, StoreId> = phf_map! {
+    262u16 => StoreId::STRING,  //text
+    265u16 => StoreId::CODE,    //use
+    266u16 => StoreId::STRING,  //family
+    267u16 => StoreId::LSTRING, //given,
+    268u16 => StoreId::LSTRING, //prefix
+    269u16 => StoreId::LSTRING  //suffix
+};
+
+static NARRATIVE_EXPECTS: phf::Map<u16, StoreId> = phf_map! {
+    263u16 => StoreId::CODE,       //status
+    264u16 => StoreId::STRING,     //div
+};
+
+static HAS_SUPS: phf::Set<u16> = phf_set! {
+    47u16, //HUMANNAME
+    48u16  //NARRATIVE
 };
 
 
@@ -431,13 +557,31 @@ pub fn store_id_for_u16(k: u16) -> Option<&'static [u8]> {
 pub fn get_expects(exp: u16) -> Option<StoreId> {
     EXPECTS.get(&exp).cloned()
 }
+
+pub fn has_sub(id: u16) -> bool {
+    HAS_SUPS.contains(&id)
+}
+
+pub fn get_from_sub(id: u16, expects_for: u16) -> Option<StoreId> {
+    match id {
+        47u16 => {
+            HUMANNAME_EXPECTS.get(&expects_for).cloned()
+        },
+        48u16 => {
+            NARRATIVE_EXPECTS.get(&expects_for).cloned()
+        }
+        _ => None
+    }
+}
+
+
 //################## Util funcs ##############################################
 
 fn get_fixed_size<T: Sized>() -> u16 {
     std::mem::size_of::<T>() as u16
 }
 
-fn u16_from_usize(i: usize) -> Result<u16> {
+pub fn u16_from_usize(i: usize) -> Result<u16> {
     match u16::try_from(i) {
         Ok(uint) => Ok(uint),
         Err(err) => Err(Error::Custom(err.to_string()))
@@ -455,11 +599,13 @@ fn check_u16_max(i: usize) -> Result<()> {
     Ok(())
 }
 
-fn dt_serialized(val: Box<[u8]>, id: StoreId) -> Result<Vec<u8>> {
+fn dt_serialized(val: Box<[u8]>, id: Option<StoreId>) -> Result<Vec<u8>> {
     let mut container = Vec::<u8>::with_capacity(val.len()+4);
     let len = u16_from_usize(val.len())?.to_be_bytes();
     container.extend(len);
-    container.extend(id.as_bytes());
+    if id.is_some() {
+        container.extend(id.unwrap().as_bytes());
+    }
     container.extend_from_slice(&*val);
     Ok(container)
 }
