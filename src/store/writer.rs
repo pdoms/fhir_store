@@ -147,7 +147,7 @@ impl Resource {
  //   }
     
 
-    fn set(&mut self, src: *mut u8, len: usize)-> Result<usize> {
+    pub fn set(&mut self, src: *mut u8, len: usize)-> Result<usize> {
         if self.cursor + len >= self.cap {
             return Err(Error::SegmentationFault)
         }
