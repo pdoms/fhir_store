@@ -1,8 +1,5 @@
-pub mod resource_reader;
-pub mod datatype;
-pub mod tree;
-
 use crate::error::{Result, Error};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ResourceId {
@@ -32,4 +29,8 @@ impl TryFrom<u16> for ResourceId {
     }
 }
 
-
+impl Into<u16> for ResourceId {
+    fn into(self) -> u16 {
+        self as u16
+    }
+}

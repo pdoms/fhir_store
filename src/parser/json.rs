@@ -1,191 +1,15 @@
-use std::os::unix::raw::off_t;
+use crate::datatypes::id::{ID, get_expects, get_from_sub, get_key_id, ID_LEN};
+use crate::resourcetypes::ResourceId;
+use crate::store::resourcewriter::ResourceWriter;
+
 use std::ptr::slice_from_raw_parts;
-
-use crate::error::Error;
-use crate::{store::writer::Resource, data::resource_reader};
-use crate::data::ResourceId;
-use phf::{phf_map, phf_set};
-
-const HEADER_LEN: usize = 72;
-
-const EOL:u16 = 21;
-const GENERAL_PURPOSE: u16 = 512;
-const GENERAL_PURPOSE_LIST: u16 = 2048;
-const KEY_ID_START: u16 = 4096;
-
-#[derive(Clone, Debug)]
-#[repr(u16)]
-enum ID {
-    EMPTY,
-    STRING,
-    BOOLEAN,
-    CODE,
-    ENDOFLIST = EOL,
-    LSTRING,
-    NARRATIVE = GENERAL_PURPOSE,
-    HUMANNAME,
-    LHUMANNAME = GENERAL_PURPOSE_LIST,
-    ResourceType = KEY_ID_START,
-    Active,
-    Text,
-    Status,
-    Div,
-    Name,
-    Use,
-    Given,
-    Family
-}
-
-
-impl ID {
-    fn is_primitive(&self) -> bool {
-        (*self as u16) < EOL 
-    }
-
-    fn is_primitive_list(&self) -> bool {
-        let cast = *self as u16;
-        cast > EOL && cast < GENERAL_PURPOSE
-    }
-
-    fn is_gp_list(&self) -> bool {
-        let cast = *self as u16;
-        cast >= GENERAL_PURPOSE_LIST && cast < KEY_ID_START
-    }
-
-    fn is_general_purpose(&self) -> bool {
-        let cast = *self as u16;
-        cast >= GENERAL_PURPOSE && cast < GENERAL_PURPOSE_LIST 
-    }
-    fn is_key(&self) -> bool {
-        (*self as u16) >= KEY_ID_START
-    }
-
-
-    fn to_store(&self) -> [u8; 2] {
-        (*self as u16).to_be_bytes()
-    }
-
-    
-}
-
-impl TryFrom<u16> for ID {
-    type Error = String;
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        match IDS.get(&value) {
-            Some(id) => Ok(id.clone()),
-            None => Err("Damn not found {value}".to_string())
-        }
-    }
-}
-static IDS: phf::Map<u16, ID> = phf_map! {
-       1u16    => ID::STRING,
-       2u16    => ID::BOOLEAN,
-       3u16    => ID::CODE,
-       21u16   => ID::ENDOFLIST,
-       22u16   => ID::LSTRING,
-       512u16  => ID::NARRATIVE,
-       513u16  => ID::HUMANNAME,
-       2048u16 => ID::LHUMANNAME,
-       4096u16 => ID::ResourceType,
-       4097u16 => ID::Active,
-       4098u16 => ID::Text,
-       4099u16 => ID::Status,
-       4100u16 => ID::Div,
-       4101u16 => ID::Name,
-       4102u16 => ID::Use,
-       4103u16 => ID::Given,
-       4104u16 => ID::Family
-};
-
-static KEYS: phf::Map<&'static str, ID> = phf_map! {
-    "resourcetype" => ID::ResourceType,
-    "active"       => ID::Active,
-    "text"         => ID::Text,
-    "status"       => ID::Status,
-    "div"          => ID::Div,
-    "name"         => ID::Name,
-    "use"          => ID::Use,
-    "family"       => ID::Family,
-    "given"        => ID::Given
-};
-
-
-static EXPECTS: phf::Map<u16, ID> = phf_map! {
-    4096u16 => ID::STRING,     //resourceType
-    4097u16 => ID::BOOLEAN,    //active
-    4098u16 => ID::NARRATIVE,  //text    
-    4099u16 => ID::STRING,     //status
-    4100u16 => ID::STRING,     //div
-    4101u16 => ID::LHUMANNAME, //name
-    4102u16 => ID::CODE,       //use
-    4103u16 => ID::LSTRING,    //given,
-    4104u16 => ID::STRING,     //family
-};
-
-static HUMANNAME_EXPECTS: phf::Map<u16, ID> = phf_map! {
-    4103u16 => ID::LSTRING, //given,
-    4104u16 => ID::STRING,  //family
-};
-
-static NARRATIVE_EXPECTS: phf::Map<u16, ID> = phf_map! {
-    4099u16 => ID::CODE,       //status
-    4100u16 => ID::STRING,     //div
-};
-
-static HAS_SUPS: phf::Set<u16> = phf_set! {
-    512u16, //NARRATIVE
-    513u16, //HUMANNAME
-    2048u16, //LHUMANNAME
-};
-
-fn get_expected(key: u16) -> Option<ID> {
-    if let Some(exp) = get_expects(key) {
-        let exp_u = exp as u16;
-        if has_sub(exp_u) {
-            return get_from_sub(key, exp_u)
-        } else {
-            return Some(exp)
-        }
-    }
-    None
-}
-
-fn get_expects(exp: u16) -> Option<ID> {
-    EXPECTS.get(&exp).cloned()
-}
-
-fn has_sub(id: u16) -> bool {
-    HAS_SUPS.contains(&id)
-}
-
-fn get_from_sub(id: u16, expects_for: u16) -> Option<ID> {
-    match id {
-        513u16 | 2048u16 => {
-            HUMANNAME_EXPECTS.get(&expects_for).cloned()
-        },
-        512u16 => {
-            NARRATIVE_EXPECTS.get(&expects_for).cloned()
-        }
-        _ => None
-    }
-}
-
-fn get_key_id(key: &[u8]) -> Option<ID> {
-    if let Ok(s) = std::str::from_utf8(key) {
-        KEYS.get(&s.to_ascii_lowercase()).cloned()
-    } else {
-        None
-    }
-}
-
-
 
 pub fn from_json(src: &[u8]) -> Vec<u8> {
     let mut parser = JsonParser {
         src,
         cursor: 0,
-        writer: Resource::new(ResourceId::Patient, 1).unwrap(),
-        lengths: LengthCollector::default(),
+        writer: ResourceWriter::new(ResourceId::Patient).unwrap(),
+        lengths: LengthStack::default(),
         keys: KeyStack::default(),
         after_comma: false
     };
@@ -194,15 +18,12 @@ pub fn from_json(src: &[u8]) -> Vec<u8> {
 }
 
 
-
-
-
 #[derive(Default, Debug)]
-struct LengthCollector {
+struct LengthStack {
     offsets: Vec<u16>,
 }
 
-impl LengthCollector {
+impl LengthStack {
     fn push(&mut self, offset: usize) {
         if let Ok(offs) = u16::try_from(offset) { 
             self.offsets.push(offs)
@@ -225,8 +46,7 @@ impl LengthCollector {
             }
         }
     }
-} 
-
+}
 
 #[derive(Default, Debug, Clone)]
 struct KeyStack {
@@ -280,12 +100,11 @@ impl KeyStack {
 }
 
 
-
 struct JsonParser<'p> {
     src: &'p[u8],
     cursor: usize,
-    writer: Resource,
-    lengths: LengthCollector,
+    writer: ResourceWriter,
+    lengths: LengthStack,
     keys: KeyStack,
     after_comma: bool 
 
@@ -294,19 +113,19 @@ struct JsonParser<'p> {
 impl<'p> JsonParser<'p> {
     
     fn print_buffer(&self) {
-        let data = unsafe {&*slice_from_raw_parts(self.writer.buffer.as_ptr(), self.writer.len())};
-        let relevant = data.to_vec().drain(HEADER_LEN..).collect::<Vec<u8>>();
+        let data = unsafe {&*slice_from_raw_parts(self.writer.get_mut_ptr(), self.writer.len())};
+        let relevant = data.to_vec().drain(self.writer.get_header_len()..).collect::<Vec<u8>>();
         println!("==================================================================");
         println!("DATA: {:?}", relevant);
         println!("DATA LENGTH: {}",relevant.len());
-        println!("WRITER LEN (HEADER ADJ): {}", self.writer.len() - HEADER_LEN);
+        println!("WRITER LEN (HEADER ADJ): {}", self.writer.len() - self.writer.get_header_len());
         println!("LengthCollector DATA: {:?}", self.lengths);
         println!("==================================================================");
     }
 
     fn get_buffer(&self) -> Vec<u8> {
-        let data = unsafe {&*slice_from_raw_parts(self.writer.buffer.as_ptr(), self.writer.len())};
-        data.to_vec().drain(HEADER_LEN..).collect::<Vec<u8>>()
+        let data = unsafe {&*slice_from_raw_parts(self.writer.get_mut_ptr(), self.writer.len())};
+        data.to_vec().drain(self.writer.get_header_len()..).collect::<Vec<u8>>()
     }
 
     fn eat_char(&mut self) {
@@ -368,13 +187,13 @@ impl<'p> JsonParser<'p> {
             b'{' => {
                 self.eat_char();
                 let len = self.writer.len();
-                self.writer.reserve_length().unwrap();
+                self.writer.reserve_two().unwrap();
                 self.lengths.push(len);
                 if self.keys.len() > 0 {
                     if let Some(k) = self.keys.last() {
                         if k.is_general_purpose() {
                             //insert gp id and length
-                            self.writer.set_u16(2).unwrap();
+                            self.writer.set_u16(2u16).unwrap();
                             self.writer.set_u16(*k as u16).unwrap();
                         }
                     }
@@ -478,7 +297,7 @@ impl<'p> JsonParser<'p> {
 
     fn parse_primitive_list(&mut self) {
         let offset = self.writer.len();
-        let _ = self.writer.reserve_length();
+        let _ = self.writer.reserve_two();
         self.lengths.push(offset);
         if let Some(expects) = self.keys.clone().last() {
             let _ = self.writer.set_u16(*expects as u16);
@@ -505,7 +324,7 @@ impl<'p> JsonParser<'p> {
 
     fn prepare_gp_list(&mut self) {
         let offset = self.writer.len();
-        let _ = self.writer.reserve_length();
+        let _ = self.writer.reserve_two();
         self.lengths.push(offset);
         if let Some(expects) = self.keys.clone().last() {
             let _ = self.writer.set_u16(*expects as u16);
@@ -564,14 +383,14 @@ impl<'p> JsonParser<'p> {
                         self.keys.push(expects);
                     }
                 }
-                let _ = self.writer.set_u16(2);
+                let _ = self.writer.set_u16(ID_LEN);
                 let _ = self.writer.set_u16(key_id as u16);
                 self.check_n_eat(b'"', "set_key() has keys");
             } else {
                 if let Some(expects) = get_expects(key_id as u16) {
                     self.keys.push(expects);
                 }
-                let _ = self.writer.set_u16(2);
+                let _ = self.writer.set_u16(ID_LEN);
                 let _ = self.writer.set_u16(key_id as u16);
                 self.check_n_eat(b'"', "set_key() has no keys");
                 }
@@ -579,105 +398,14 @@ impl<'p> JsonParser<'p> {
     }
 }
 
-fn read_buffer(mut buf: &[u8]) -> Vec<u16> {
-    let len: [u8; 2] = buf[..2].try_into().unwrap();
-    buf = &buf[2..];
-    let mut result = Vec::<u16>::new();
-    result.push(u16::from_be_bytes(len));
-    let mut gp_list = 0;
-    let mut current = 0;
-    while buf.len() > 0 {
-        if gp_list > 0 && current == 0 {
-            let length: [u8; 2] = buf[..2].try_into().unwrap();
-            buf = &buf[2..];
-            let length = u16::from_be_bytes(length);
-            result.push(length);
-            //gp_list -= 2;
-            current = length;
-        }
 
-
-
-        let len: [u8; 2] = buf[..2].try_into().unwrap();
-        buf = &buf[2..];
-        if gp_list > 0 {
-            gp_list -= 2;
-        }
-        if current > 0 {
-            current -= 2;
-        }
-        let pos_id: [u8; 2] = buf[..2].try_into().unwrap();
-        let id = ID::try_from(u16::from_be_bytes(pos_id)).unwrap();
-        buf = &buf[2..];
-        if gp_list > 0 {
-            gp_list -= 2;
-        }
-        if current > 0 {
-            current -= 2;
-        }
-        let l = u16::from_be_bytes(len);
-        result.push(l);
-        result.push(id as u16);
-        if let Some(expects) = get_expects(id as u16) {
-            if expects.is_general_purpose() {
-                let gp_len: [u8; 2] = buf[..2].try_into().unwrap();
-                let le = u16::from_be_bytes(gp_len);
-                result.push(le);
-                buf = &buf[2..];
-                if gp_list > 0 {
-                    gp_list -= 2;
-                }
-                if current > 0 {
-                    current -= 2;
-                }
-                continue;
-            }
-        }
-        if id.is_primitive_list() {
-            let mut temp_cur = 0;
-            let trgt = l-2-4;
-            if gp_list > 0 {
-                gp_list -= l-2;
-            }
-            if current > 0 {
-                current -= trgt;
-            }
-            while temp_cur < trgt {
-                let length: [u8; 2] = buf[..2].try_into().unwrap();
-                buf = &buf[2..];
-                let length = u16::from_be_bytes(length);
-                result.push(length);
-                buf = &buf[length as usize..];
-                temp_cur += 2 + length;
-            }
-        } else if id.is_gp_list() {
-            gp_list = u16::from_be_bytes(len);
-            let length: [u8; 2] = buf[..2].try_into().unwrap();
-            //gp_list -= 2;
-            buf = &buf[2..];
-            let length = u16::from_be_bytes(length);
-            result.push(length);
-            current = length;
-        } else if !id.is_key() {
-            buf = &buf[(l - 2 )as usize..];
-            if gp_list > 0 {
-                gp_list -= l;
-            }
-            if current > 0 {
-                current -= l;
-            }
-        }
-
-    }
-    return result
-}
 
 
 
 #[cfg(test)]
 mod test {
     use super::*;
-    
+    use crate::store::bufreader::read_buffer;   
 
     fn assert_data(expects: Vec<u8>, result: Vec<u8>) {
         for (i, byte) in expects.iter().enumerate() {
@@ -688,7 +416,7 @@ mod test {
     }
 
     #[test]
-    fn parse_key_value() {
+    fn json_parse_key_value() {
         let data = br#"{"resourceType": "patient"}"#;
 
         // HEADER (skip for now) -> // ResourceID [16]  | ResourceType [2] 
@@ -703,7 +431,7 @@ mod test {
     }
 
     #[test]
-    fn parse_several_key_values() {
+    fn json_parse_several_key_values() {
         let data = br#"{"resourceType": "patient", "active": true}"#;
         let expects: Vec<u8> = vec![0, 24, 0, 2, 16, 0, 0, 9, 0, 1, 112, 97, 116, 105, 101, 110, 116, 0, 2, 16, 1, 0, 3, 0, 2, 1];
         let read: Vec<u16> = vec![24, 2, 4096, 9, 1, 2, 4097, 3, 2];
@@ -712,7 +440,7 @@ mod test {
         assert_eq!(read_buffer(&result), read);
     }
     #[test]
-    fn parse_obj_as_value() {
+    fn json_parse_obj_as_value() {
         let data = br#"{"text": {"status": "done", "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">"}}"#;
                                         //    text          NARRATIVE     status
                                         //ilen gpid  olen  ilen gpid      key  
@@ -725,7 +453,7 @@ mod test {
     }
 
     #[test]
-    fn parse_list_of_primitives() {
+    fn json_parse_list_of_primitives() {
         let data = br#"{"given": ["Rainer", "Maria"]}"#;
         //                          len  id_l key   len  type len data                          len data                     
         let expects: Vec<u8> = vec![0,23, 0,2, 16,7, 0,17, 0,22, 0,6, 82, 97, 105, 110, 101, 114, 0,5, 77, 97, 114, 105, 97];
@@ -736,7 +464,7 @@ mod test {
     }
 
     #[test]
-    fn parse_list_of_obj() {
+    fn json_parse_list_of_obj() {
         let data = br#"{"resourceType": "patient", "name": [{"use" : "official", "family" : "Chalmers", "given" : ["Peter", "James"]}, {"use" : "usual", "given": ["Jim"]}]}"#;
         //                        t_len  len    id    len    kid   data                               
         let expects: Vec<u8> = vec![0,107, 0,2, 16,0, 0, 9,  0, 1, 112, 97, 116, 105, 101, 110, 116, //16 

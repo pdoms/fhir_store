@@ -1,11 +1,9 @@
 use std::io::{Read, Write, Seek};
 use std::fs::{OpenOptions, File};
-use super::writer::PAGE_SIZE;
 use crate::error::{Result, Error};
-use crate::parser::jsonparser::JsonParser;
 
 const INIT_PAGES: usize = 4;
-
+pub const PAGE_SIZE: usize = 4096;
 type PAGE = &'static [u8;PAGE_SIZE];
 
 fn print_const() {
@@ -73,34 +71,34 @@ impl Store {
         self.file.read_exact(&mut buf).unwrap();
         buf.to_vec()
     }
-    pub fn create_resource_from_json<D: Read>(&mut self, resource_id: &str, mut data: D) -> Result<()> {
-        let mut buf = Vec::new();
-        match data.read_to_end(&mut buf) {
-            Ok(_) => {
-                let page_num = self.header.inc_top();
-                let mut parser = JsonParser::new_from_slice(&buf, resource_id, page_num as usize)?;
-                parser.parse()?;
-                let ptr = parser.flush();
-                let len = parser.len();
-                println!("LENGTH {}", len);
-                let page_offset = (page_num - 1) * PAGE_SIZE as u16;
-                //TODO ERROR
-                println!("OFFSET: {page_offset}");
-                self.file.seek(std::io::SeekFrom::Start(page_offset as u64)).unwrap();
-                //TODO make sure mem size is not longer than page size
-                let buf: &[u8] = unsafe {
-                    let buf = std::ptr::slice_from_raw_parts(ptr, len);
-                    &*buf
-                };
-                println!("BUFFER: {:?}", buf);
-                
-                self.file.write_all(buf).unwrap();
-                self.file.sync_data().unwrap();
-                Ok(())
-            },
-            Err(err) => Err(Error::Custom(err.to_string()))
-        }
-    }
+    //pub fn create_resource_from_json<D: Read>(&mut self, resource_id: &str, mut data: D) -> Result<()> {
+    //    let mut buf = Vec::new();
+    //    match data.read_to_end(&mut buf) {
+    //        Ok(_) => {
+    //            let page_num = self.header.inc_top();
+    //            let mut parser = JsonParser::new_from_slice(&buf, resource_id, page_num as usize)?;
+    //            parser.parse()?;
+    //            let ptr = parser.flush();
+    //            let len = parser.len();
+    //            println!("LENGTH {}", len);
+    //            let page_offset = (page_num - 1) * PAGE_SIZE as u16;
+    //            //TODO ERROR
+    //            println!("OFFSET: {page_offset}");
+    //            self.file.seek(std::io::SeekFrom::Start(page_offset as u64)).unwrap();
+    //            //TODO make sure mem size is not longer than page size
+    //            let buf: &[u8] = unsafe {
+    //                let buf = std::ptr::slice_from_raw_parts(ptr, len);
+    //                &*buf
+    //            };
+    //            println!("BUFFER: {:?}", buf);
+    //            
+    //            self.file.write_all(buf).unwrap();
+    //            self.file.sync_data().unwrap();
+    //            Ok(())
+    //        },
+    //        Err(err) => Err(Error::Custom(err.to_string()))
+    //    }
+    //}
 
     pub fn get_resource_by_id(&mut self, id: &str) {
         todo!()
@@ -186,7 +184,7 @@ mod test {
         assert_eq!(store.header.num_pages, INIT_PAGES as u16);
         assert_eq!(store.header.page_size, PAGE_SIZE as u16);
         let json = File::open("example.json").unwrap();
-        store.create_resource_from_json("patient", json).unwrap();
+      //  store.create_resource_from_json("patient", json).unwrap();
     }
 }
 
