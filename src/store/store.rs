@@ -7,7 +7,7 @@ pub const PAGE_SIZE: usize = 4096;
 type PAGE = &'static [u8;PAGE_SIZE];
 
 fn print_const() {
-    println!("INFO: contants\n\t- PAGE_SIZE:  {PAGE_SIZE}\n\t- INIT_PAGES: {INIT_PAGES}");
+    println!("INFO: constants\n\t- PAGE_SIZE:  {PAGE_SIZE}\n\t- INIT_PAGES: {INIT_PAGES}");
 }
 
 #[derive(Debug)]

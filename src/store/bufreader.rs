@@ -38,7 +38,7 @@ pub fn read_buffer(mut buf: &[u8]) -> Vec<u16> {
         let l = u16::from_be_bytes(len);
         result.push(l);
         result.push(id as u16);
-        if let Some(expects) = get_expects(id as u16) {
+        if let Some(expects) = get_expects(id.clone()) {
             if expects.is_general_purpose() {
                 let gp_len: [u8; 2] = buf[..2].try_into().unwrap();
                 let le = u16::from_be_bytes(gp_len);
