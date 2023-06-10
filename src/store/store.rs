@@ -71,6 +71,10 @@ impl Store {
         self.file.read_exact(&mut buf).unwrap();
         buf.to_vec()
     }
+
+    pub fn add_resource() {}
+
+
     //pub fn create_resource_from_json<D: Read>(&mut self, resource_id: &str, mut data: D) -> Result<()> {
     //    let mut buf = Vec::new();
     //    match data.read_to_end(&mut buf) {
@@ -179,12 +183,10 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_open_store() {
-        let mut store = Store::open().unwrap();
+    fn store_open_store() {
+        let store = Store::open().unwrap();
         assert_eq!(store.header.num_pages, INIT_PAGES as u16);
         assert_eq!(store.header.page_size, PAGE_SIZE as u16);
-        let json = File::open("example.json").unwrap();
-      //  store.create_resource_from_json("patient", json).unwrap();
     }
 }
 

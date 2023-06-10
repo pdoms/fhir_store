@@ -20,6 +20,7 @@ pub enum Error {
     SegmentationFault,
     IdMaxLen,
     StoreUnitMaxLen,
+    UnknownExpect,
     EOF,
 
 }
@@ -44,6 +45,7 @@ impl Display for Error {
             Error::StoreUnitMaxLen         => formatter.write_fmt(
                 format_args!("CONVERSION: store unit max length of {} reached", u16::MAX)),
             Error::EOF                     => formatter.write_str("PARSING: unexpected end of input"),
+            Error::UnknownExpect           => formatter.write_str("PARSING: error figuring out expected datatype"),
         }
     }
 }

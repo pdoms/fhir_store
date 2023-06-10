@@ -1,7 +1,10 @@
 use crate::datatypes::id::{ID, get_expects, get_from_sub, get_key_id, ID_LEN};
+use crate::error::{Result, Error};
 use crate::resourcetypes::ResourceId;
 use crate::store::resourcewriter::ResourceWriter;
+use super::stacks::*;
 
+use std::ops::{AddAssign, MulAssign};
 use std::ptr::slice_from_raw_parts;
 
 pub fn from_json(src: &[u8]) -> Vec<u8> {
@@ -18,86 +21,6 @@ pub fn from_json(src: &[u8]) -> Vec<u8> {
 }
 
 
-#[derive(Default, Debug)]
-struct LengthStack {
-    offsets: Vec<u16>,
-}
-
-impl LengthStack {
-    fn push(&mut self, offset: usize) {
-        if let Ok(offs) = u16::try_from(offset) { 
-            self.offsets.push(offs)
-        }
-    }
- 
-    fn get_length(&mut self, offset: usize) -> Option<(usize, u16)> {
-        if let Some(last) = self.offsets.pop() {
-            match u16::try_from(offset) {
-                Ok(offs) => {
-                    let calc_offset = offs - last;
-                    Some((last as usize, calc_offset))},
-                Err(_) => None
-            }
-        } else {
-            match u16::try_from(offset) {
-                Ok(offs) => {
-                    Some((0, offs))},
-                Err(_) => None
-            }
-        }
-    }
-}
-
-#[derive(Default, Debug, Clone)]
-struct KeyStack {
-    keys: Vec<ID>
-}
-
-impl KeyStack {
-
-    fn len(&self) -> usize {
-        self.keys.len()
-    }
-    fn push(&mut self, k: ID) {
-        self.keys.push(k)
-    }
-    fn pop(&mut self) {
-        if self.keys.len() > 0 {
-            self.keys.pop();
-        }  
-    }
-
-    fn last(&self) -> Option<&ID> {
-        if self.keys.len() > 0 {
-            self.keys.last()
-        } else {
-            None
-        }
-    }
-
-    fn last_is_general_purpose(&self) -> bool {
-        if let Some(last) = self.keys.last() {
-            last.is_general_purpose()
-        } else {
-            false
-        }
-    }
-
-    fn last_is_general_purpose_list(&self) -> bool {
-        if let Some(last) = self.keys.last() {
-            last.is_gp_list()
-        } else {
-            false
-        }
-    }
-    fn last_is_primitive_list(&self) -> bool {
-        if let Some(last) = self.keys.last() {
-            last.is_primitive_list()
-        } else {
-            false
-        }
-    }
-}
 
 
 struct JsonParser<'p> {
@@ -186,6 +109,7 @@ impl<'p> JsonParser<'p> {
         match *ch {
             b'{' => {
                 self.eat_char();
+                self.eat_whitespace();
                 let len = self.writer.len();
                 self.writer.reserve_two().unwrap();
                 self.lengths.push(len);
@@ -204,14 +128,17 @@ impl<'p> JsonParser<'p> {
             },
             b'}' => {
                 self.eat_char();
+                self.eat_whitespace();
                 let offset = self.writer.len();
                 if let Some((location, length)) = self.lengths.get_length(offset) {
                     self.writer.set_u16_at(length-2, location).unwrap();
                 }
+                self.keys.pop();
                 return self.parse()
             }
             b'[' => {
                 self.eat_char();
+                self.eat_whitespace();
                 //check expected
                 if self.keys.last_is_primitive_list() {
                     self.parse_primitive_list();   
@@ -224,6 +151,7 @@ impl<'p> JsonParser<'p> {
             },
             b']' => {
                 self.eat_char();
+                self.eat_whitespace();
                 let offset = self.writer.len();
                 if let Some((location, length)) =self.lengths.get_length(offset) {
                     self.writer.set_u16_at(length-2, location).unwrap();
@@ -252,13 +180,20 @@ impl<'p> JsonParser<'p> {
                 }
                 self.set_key();
                 return self.parse()
-            }
-
+            },
+            //TODO handle signed numbers
+            //TODO handle floats/decimals
+            b'0'..=b'9' => {
+                match self.parse_numeric() {
+                    Ok(_) => self.parse(),
+                    Err(err) => panic!("{}", err)
+                };
+            },
             b't' | b'f' => {
                 self.set_bool(*ch);
                 return self.parse()
             }
-            _ => panic!("UNKNOWN CHARACTER -> {}", *ch as char)
+            _ => panic!("UNKNOWN CHARACTER -> {}, data: {}", *ch as char, String::from_utf8(self.src.to_vec()).unwrap())
         }
     }
 
@@ -268,6 +203,13 @@ impl<'p> JsonParser<'p> {
             result.push(self.next_char().unwrap());
         }
         result
+    }
+
+    fn check_is_multiple(&mut self) {
+        if self.keys.last_is_mulitple() {
+            
+        }
+
     }
 
     fn parse_string(&mut self) -> Vec<u8> {
@@ -293,6 +235,52 @@ impl<'p> JsonParser<'p> {
         }
         result
     }
+
+    fn parse_numeric(&mut self) -> Result<()> {
+        if let Some(key) = self.keys.last() {
+            match key {
+                ID::POSITIVEINT => {
+                    let value: i32 = self.parse_unsigned()?;
+                    self.set_unit(ID::POSITIVEINT, &mut value.to_be_bytes());
+                    Ok(())
+                },
+                ID::INTEGER => {
+                    let value: i32 = self.parse_unsigned()?;
+                    self.set_unit(ID::POSITIVEINT, &mut value.to_be_bytes());
+                    Ok(())
+                },
+            _ => return Err(Error::Expected("Integer".to_string(), "something else".to_string()))
+            }
+        } else {
+           return Err(Error::UnknownExpect)
+        }
+    }
+
+    fn parse_unsigned<T>(&mut self) -> Result<T>
+    where T: AddAssign<T> + MulAssign<T> + From<u8>,
+    {
+        let mut int = match self.next_char().unwrap() {
+            ch @ b'0'..=b'9' => T::from(ch - b'0'),
+            _ => return Err(Error::Expected("Integer".to_string(), "something else".to_string()))
+        };
+
+        while self.peek_char().is_some() {
+            if !self.peek_char().unwrap().is_ascii_digit() {
+                return Ok(int)
+            }
+            match self.next_char() {
+                Some(ch @ b'0'..=b'9') => {
+                    int *= T::from(10);
+                    int += T::from(ch-b'0');
+                },
+                 _ => {
+                     return Ok(int)
+                 } 
+            }
+        }
+        Ok(int)
+    }
+
 
 
     fn parse_primitive_list(&mut self) {
@@ -370,31 +358,48 @@ impl<'p> JsonParser<'p> {
     fn set_key(&mut self) {
         self.check_n_eat(b'"', "set_key() first_check");
         let key_bytes = self.consume_while(|c| c != b'"');
+        println!("FOUND KEY: {}", String::from_utf8(key_bytes.clone()).unwrap());
         if let Some(key_id) = get_key_id(&key_bytes) {
             if self.keys.len() > 0 {
+                println!("KeyStack has members {:?}", self.keys);
                 //if last is gp take the get_expected as function
                 if self.keys.last_is_general_purpose() {
+                    println!("Key is general purpose");
                     let k = self.keys.last().unwrap();
-                    if let Some(expects) = get_from_sub(*k as u16, key_id as u16) {
+                    if let Some(expects) = get_from_sub::<u16>(*k as u16, key_id.clone().into()) {
+                        println!("Key expects {:?}", expects);
                         self.keys.push(expects);
+                    } else {
+                        panic!("No EXPECTS found at general purpose.")
                     }
                 } else {
-                    if let Some(expects) = get_expects(key_id as u16) {
+                    println!("Key is no general purpose");
+                    if let Some(expects) = get_expects::<u16>(key_id.clone().into()) {
+                        println!("Key expects {:?}", expects);
                         self.keys.push(expects);
+                    } else {
+                        panic!("No EXPECTS found.")
                     }
                 }
                 let _ = self.writer.set_u16(ID_LEN);
-                let _ = self.writer.set_u16(key_id as u16);
+                let _ = self.writer.set_u16(key_id);
                 self.check_n_eat(b'"', "set_key() has keys");
             } else {
-                if let Some(expects) = get_expects(key_id as u16) {
+                println!("KeyStack has no members");
+                if let Some(expects) = get_expects::<u16>(key_id.clone().into()) {
+                    println!("Key expects {:?}", expects);
                     self.keys.push(expects);
+                } else {
+                    panic!("No EXPECTS found.")
                 }
                 let _ = self.writer.set_u16(ID_LEN);
-                let _ = self.writer.set_u16(key_id as u16);
+                let _ = self.writer.set_u16(key_id);
                 self.check_n_eat(b'"', "set_key() has no keys");
                 }
-            } 
+            } else {
+                self.print_buffer();
+                panic!("Unknown Key {}", String::from_utf8(key_bytes).unwrap());
+            }
     }
 }
 
@@ -406,6 +411,7 @@ impl<'p> JsonParser<'p> {
 mod test {
     use super::*;
     use crate::store::bufreader::read_buffer;   
+    use std::{fs::read_to_string, fs::File, io::Read};
 
     fn assert_data(expects: Vec<u8>, result: Vec<u8>) {
         for (i, byte) in expects.iter().enumerate() {
@@ -413,6 +419,23 @@ mod test {
                 println!("ERROR AT: {} -> expected {} got {}", i, byte, result[i]);
             }
         }
+    }
+
+    fn parse_byte_file(f: &str) -> Vec<u8>  {
+        let mut result = Vec::<u8>::new();
+        for line in read_to_string(f).unwrap().lines() {
+            let relevant = match line.split_once("//") {
+                Some(data) => data.0,
+                None => line
+            };
+            let bytes: Vec<u8> = relevant
+                .trim()
+                .split(" ")
+                .filter(|x| !x.is_empty())
+                .map(|x| x.parse::<u8>().unwrap()).collect();
+            result.extend(bytes)
+        }
+        result
     }
 
     #[test]
@@ -501,6 +524,41 @@ mod test {
         assert_data(expects.clone(), result.clone());
         assert_eq!(result, expects);
         assert_eq!(read_buffer(&result), read);
+
+    }
+
+    #[test]
+    fn json_parse_numerics() {
+        //positive int
+        let data = br#"{"rank": 123456}"#;
+        let expects: Vec<u8> = vec![0, 12, 0, 2, 16, 25, 0, 6, 0, 7, 0, 1, 226, 64];
+        let read: Vec<u16> = vec![12, 2, 4121, 6, 7];
+        let result = from_json(data);
+        assert_eq!(result, expects);
+        assert_eq!(read_buffer(&result), read);
+    }
+
+
+    #[test]
+    fn json_parse_multiple() {
+        let data_is_boolean = br#"{"deceased": true}"#;
+        let data_is_date_time = br#"{"deceased": "2018, 1973-06, 1905-08-23, 2015-02-07T13:28:17-05:00"}"#;
+        let data_is_integer = br#"{"multipleBirth": 1}"#;
+        let expects_boolean: Vec<u8>   = vec![0, 0, 0, 2, 16, 25, 0, 6, 0, 7, 0, 1, 226, 64];
+        let expects_date_time: Vec<u8> = vec![0, 0, 0, 2, 16, 25, 0, 6, 0, 7, 0, 1, 226, 64];
+        let expects_integer: Vec<u8>   = vec![0, 0, 0, 2, 16, 25, 0, 6, 0, 7, 0, 1, 226, 64];
+
+
+    }
+
+    //#[test]
+    fn json_parse_patient() {
+        let mut fd = File::open("test_data/general_person_example_no_extension.json").unwrap();
+        let mut data = Vec::<u8>::new();
+        fd.read_to_end(&mut data).unwrap();
+        let expects = parse_byte_file("test_data/general_person_example_bytes.txt");
+        let result = from_json(&data);
+
 
     }
 }
