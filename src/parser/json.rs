@@ -542,11 +542,11 @@ mod test {
     #[test]
     fn json_parse_multiple() {
         let data_is_boolean = br#"{"deceased": true}"#;
-        let data_is_date_time = br#"{"deceased": "2018, 1973-06, 1905-08-23, 2015-02-07T13:28:17-05:00"}"#;
+        let data_is_date_time = br#"{"deceased": "2015-02-07T13:28:17-05:00"}"#;
         let data_is_integer = br#"{"multipleBirth": 1}"#;
-        let expects_boolean: Vec<u8>   = vec![0, 0, 0, 2, 16, 25, 0, 6, 0, 7, 0, 1, 226, 64];
-        let expects_date_time: Vec<u8> = vec![0, 0, 0, 2, 16, 25, 0, 6, 0, 7, 0, 1, 226, 64];
-        let expects_integer: Vec<u8>   = vec![0, 0, 0, 2, 16, 25, 0, 6, 0, 7, 0, 1, 226, 64];
+        let expects_boolean: Vec<u8>   = vec![0, 0, 0, 2, 16, 28, 0, 3, 0, 2, 0, 1];
+        let expects_date_time: Vec<u8> = vec![0, 0, 0, 2, 16, 28, 0, 0, 0, 7, 0, 1, 226, 64];
+        let expects_integer: Vec<u8>   = vec![0, 0, 0, 2, 16, 29, 0, 0, 0, 7, 0, 1, 226, 64];
 
 
     }

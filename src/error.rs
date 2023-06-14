@@ -21,6 +21,8 @@ pub enum Error {
     IdMaxLen,
     StoreUnitMaxLen,
     UnknownExpect,
+    TimeStampOverflow,
+    TimeStampParsingError,
     EOF,
 
 }
@@ -44,6 +46,8 @@ impl Display for Error {
             Error::IdMaxLen                => formatter.write_str("CONVERSION: id max length is 64 characters"),
             Error::StoreUnitMaxLen         => formatter.write_fmt(
                 format_args!("CONVERSION: store unit max length of {} reached", u16::MAX)),
+            Error::TimeStampOverflow       => formatter.write_str("FHIR_DATETIME: TimeStamp overflow occured."), 
+            Error::TimeStampParsingError   => formatter.write_str("FHIR_DATETIME: TimeStamp parsing error - unspecified."), 
             Error::EOF                     => formatter.write_str("PARSING: unexpected end of input"),
             Error::UnknownExpect           => formatter.write_str("PARSING: error figuring out expected datatype"),
         }
