@@ -17,7 +17,6 @@ pub struct Fhir_DateTime {
 
 
 impl Fhir_DateTime {
-
     pub fn from_string(s: &str) -> Result<Self> {
         if s.len() > 10 {
             if let Ok(c) = DateTime::parse_from_rfc3339(s) {
@@ -57,6 +56,7 @@ impl Fhir_DateTime {
             }
         }
     }
+
     pub fn from_timestamp_millis(ts: i64) -> Result<Self> {
         if let Some(ndt) = NaiveDateTime::from_timestamp_millis(ts) {
             let dt = DateTime::<Utc>::from_utc(ndt, Utc);

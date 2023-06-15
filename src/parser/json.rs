@@ -1,11 +1,13 @@
-use crate::datatypes::id::{ID, get_expects, get_from_sub, get_key_id, ID_LEN};
+use crate::datatypes::id::{ID, get_expects, get_from_sub, get_key_id, ID_LEN, copy_multiple, TypeClass};
 use crate::error::{Result, Error};
 use crate::resourcetypes::ResourceId;
 use crate::store::resourcewriter::ResourceWriter;
+use super::datetime::Fhir_DateTime;
 use super::stacks::*;
 
 use std::ops::{AddAssign, MulAssign};
 use std::ptr::slice_from_raw_parts;
+use std::str;
 
 pub fn from_json(src: &[u8]) -> Vec<u8> {
     let mut parser = JsonParser {
@@ -205,11 +207,24 @@ impl<'p> JsonParser<'p> {
         result
     }
 
-    fn check_is_multiple(&mut self) {
+    //will most likely only be used at [`ID::STRING`] and any numeric [`ID`]
+    fn handle_multiple(&mut self, class: TypeClass) {
         if self.keys.last_is_mulitple() {
-            
+            match class {
+                TypeClass::STRING | TypeClass::NUMERIC => {
+                    let multies = self.keys.multiple.clone();
+                    self.keys.pop();
+                    if let Some(id) = multies.get(&(class as u16)) {
+                        if let Ok(key) = ID::try_from(*id) {
+                            self.keys.push(key)
+                        }
+                    }
+                },
+                TypeClass::BOOLEAN => {
+                    self.keys.pop();
+                },
+            }
         }
-
     }
 
     fn parse_string(&mut self) -> Vec<u8> {
@@ -237,6 +252,7 @@ impl<'p> JsonParser<'p> {
     }
 
     fn parse_numeric(&mut self) -> Result<()> {
+        self.handle_multiple(TypeClass::NUMERIC);
         if let Some(key) = self.keys.last() {
             match key {
                 ID::POSITIVEINT => {
@@ -245,8 +261,9 @@ impl<'p> JsonParser<'p> {
                     Ok(())
                 },
                 ID::INTEGER => {
+                    //TODO: can be minus too
                     let value: i32 = self.parse_unsigned()?;
-                    self.set_unit(ID::POSITIVEINT, &mut value.to_be_bytes());
+                    self.set_unit(ID::INTEGER, &mut value.to_be_bytes());
                     Ok(())
                 },
             _ => return Err(Error::Expected("Integer".to_string(), "something else".to_string()))
@@ -327,9 +344,17 @@ impl<'p> JsonParser<'p> {
     }
 
     fn set_string(&mut self, data: &mut [u8]) {
+        self.handle_multiple(TypeClass::STRING);
         match self.keys.last() {
             Some(key) => {
-                self.set_unit(key.clone(), data)
+                if *key == ID::DATE || *key == ID::DATETIME {
+                    //TODO handle Error
+                    let as_str = str::from_utf8(data).unwrap();
+                    let dt = Fhir_DateTime::from_string(as_str).unwrap();
+                    self.set_unit(key.clone(), &mut dt.timestamp_millis_bytes())
+                } else {
+                    self.set_unit(key.clone(), data)
+                }
             }
             None => ()
         }
@@ -368,6 +393,10 @@ impl<'p> JsonParser<'p> {
                     let k = self.keys.last().unwrap();
                     if let Some(expects) = get_from_sub::<u16>(*k as u16, key_id.clone().into()) {
                         println!("Key expects {:?}", expects);
+                        if expects.is_multiple() {
+                            let map = copy_multiple(key_id.clone());
+                            self.keys.push_multiples(map);
+                        }
                         self.keys.push(expects);
                     } else {
                         panic!("No EXPECTS found at general purpose.")
@@ -375,6 +404,10 @@ impl<'p> JsonParser<'p> {
                 } else {
                     println!("Key is no general purpose");
                     if let Some(expects) = get_expects::<u16>(key_id.clone().into()) {
+                        if expects.is_multiple() {
+                            let map = copy_multiple(key_id.clone());
+                            self.keys.push_multiples(map);
+                        }
                         println!("Key expects {:?}", expects);
                         self.keys.push(expects);
                     } else {
@@ -388,6 +421,10 @@ impl<'p> JsonParser<'p> {
                 println!("KeyStack has no members");
                 if let Some(expects) = get_expects::<u16>(key_id.clone().into()) {
                     println!("Key expects {:?}", expects);
+                        if expects.is_multiple() {
+                            let map = copy_multiple(key_id.clone());
+                            self.keys.push_multiples(map);
+                        }
                     self.keys.push(expects);
                 } else {
                     panic!("No EXPECTS found.")
@@ -544,10 +581,16 @@ mod test {
         let data_is_boolean = br#"{"deceased": true}"#;
         let data_is_date_time = br#"{"deceased": "2015-02-07T13:28:17-05:00"}"#;
         let data_is_integer = br#"{"multipleBirth": 1}"#;
-        let expects_boolean: Vec<u8>   = vec![0, 0, 0, 2, 16, 28, 0, 3, 0, 2, 0, 1];
-        let expects_date_time: Vec<u8> = vec![0, 0, 0, 2, 16, 28, 0, 0, 0, 7, 0, 1, 226, 64];
-        let expects_integer: Vec<u8>   = vec![0, 0, 0, 2, 16, 29, 0, 0, 0, 7, 0, 1, 226, 64];
+        let expects_boolean: Vec<u8> = vec![0, 9, 0, 2, 16, 28, 0, 3, 0, 2, 1];
+        let result_boolean = from_json(data_is_boolean);
+        assert_eq!(result_boolean, expects_boolean);
 
+        let expects_date_time: Vec<u8> = vec![0, 16, 0, 2, 16, 28, 0, 10, 0, 6, 0, 0, 1, 75, 101, 76, 165, 232];
+        let result_date_time = from_json(data_is_date_time);
+        assert_eq!(result_date_time, expects_date_time);
+        let expects_integer: Vec<u8>   = vec![0, 12, 0, 2, 16, 29, 0, 6, 0, 9, 0, 0, 0, 1];
+        let result_integer = from_json(data_is_integer);
+        assert_eq!(result_integer, expects_integer);
 
     }
 

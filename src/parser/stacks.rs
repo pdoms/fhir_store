@@ -1,4 +1,5 @@
 use crate::datatypes::id::ID;
+use std::collections::HashMap;
 
 #[derive(Default, Debug)]
 pub struct LengthStack {
@@ -32,7 +33,8 @@ impl LengthStack {
 
 #[derive(Default, Debug, Clone)]
 pub struct KeyStack {
-    pub keys: Vec<ID>
+    pub keys: Vec<ID>,
+    pub multiple: HashMap<u16, u16>  
 }
 
 impl KeyStack {
@@ -43,7 +45,12 @@ impl KeyStack {
     pub fn push(&mut self, k: ID) {
         self.keys.push(k)
     }
+    pub fn push_multiples(&mut self, map: HashMap<u16, u16>) {
+        self.multiple = map;
+    }
+
     pub fn pop(&mut self) {
+        self.multiple = HashMap::new();
         if self.keys.len() > 0 {
             self.keys.pop();
         }  

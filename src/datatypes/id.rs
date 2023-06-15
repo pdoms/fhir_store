@@ -1,3 +1,5 @@
+use std::collections;
+
 use crate::error::{Error, Result};
 use phf::{phf_map, phf_set};
 
@@ -11,7 +13,7 @@ const KEY_ID_START: u16 = 4096;
 
 //TODO handle Extensions and Ids
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ID {
     EMPTY,
@@ -79,6 +81,7 @@ pub enum TypeClass {
     NUMERIC,
     BOOLEAN,
 }
+
 
 impl ID {
     pub fn is_primitive(&self) -> bool {
@@ -272,16 +275,17 @@ static HAS_SUBS: phf::Set<u16> = phf_set! {
     2050u16, //LCODING
     2051u16, //LCONTACTPOINT
 };
+
 ///Mapping of [`TypeClass`] to ID
 static MULTIPLE_DECEASED: phf::Map<u16, u16> = phf_map! {
-   3u16 => 2u16, //BOOLEAN/BOOLEAN 
-   1u16 => 6u16, //SRING/DATETIME
+   2u16 => 2u16, //BOOLEAN/BOOLEAN 
+   0u16 => 6u16, //SRING/DATETIME
 };
 
 ///Mapping of [`TypeClass`] to ID
 static MULTIPLE_MULTIPLE_BIRTH: phf::Map<u16, u16> = phf_map! {
-   3u16 => 2u16, //BOOLEAN/BOOLEAN
-   2u16 => 9u16, //NUMERIC/INTEGER
+   2u16 => 2u16, //BOOLEAN/BOOLEAN
+   1u16 => 9u16, //NUMERIC/INTEGER
 };
 
 static HUMANNAME_EXPECTS: phf::Map<u16, ID> = phf_map! {
@@ -333,6 +337,25 @@ static CONTACTPOINT_EXPECTS: phf::Map<u16, ID> = phf_map! {
     4121u16 => ID::POSITIVEINT, //rank [positiveInt] 0..1
 };
 
+pub fn copy_multiple<I: Into<u16>>(id: I) -> collections::HashMap<u16, u16> {
+    let mut map = collections::HashMap::<u16, u16>::new();
+    match id.into() {
+        4124u16 => {
+            for (k,v) in MULTIPLE_DECEASED.into_iter() {
+                map.insert(*k, *v);
+            }
+            map
+        },  //deceased
+        4125u16 => {
+            for (k,v) in MULTIPLE_MULTIPLE_BIRTH.into_iter() {
+                map.insert(*k, *v);
+            }
+            map
+        },//multiplebirth
+        _ => unreachable!("must be a bug")
+    }
+}
+
 pub fn get_expected<I: Into<u16>+Clone>(key: I) -> Option<ID> {
     if let Some(exp) = get_expects(key.clone()) {
         if has_sub(exp.clone().into()) {
@@ -381,6 +404,8 @@ pub fn get_from_sub<I: Into<u16>>(id: I, expects_for: u16) -> Option<ID> {
         _ => None
     }
 }
+
+
 
 pub fn get_key_id(key: &[u8]) -> Option<ID> {
     if let Ok(s) = std::str::from_utf8(key) {
