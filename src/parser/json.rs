@@ -4,9 +4,8 @@ use crate::resourcetypes::ResourceId;
 use crate::store::resourcewriter::ResourceWriter;
 use super::datetime::Fhir_DateTime;
 use super::stacks::*;
-
-use std::ops::{AddAssign, MulAssign};
 use std::ptr::slice_from_raw_parts;
+use fast_float;
 use std::str;
 
 pub fn from_json(src: &[u8]) -> Vec<u8> {
@@ -186,7 +185,13 @@ impl<'p> JsonParser<'p> {
             //TODO handle signed numbers
             //TODO handle floats/decimals
             b'0'..=b'9' => {
-                match self.parse_numeric() {
+                match self.parse_numeric(false) {
+                    Ok(_) => self.parse(),
+                    Err(err) => panic!("{}", err)
+                };
+            },
+            b'-' => {
+                match self.parse_numeric(true) {
                     Ok(_) => self.parse(),
                     Err(err) => panic!("{}", err)
                 };
@@ -251,19 +256,56 @@ impl<'p> JsonParser<'p> {
         result
     }
 
-    fn parse_numeric(&mut self) -> Result<()> {
+
+
+
+
+    fn parse_numeric(&mut self, is_negative: bool) -> Result<()> {
         self.handle_multiple(TypeClass::NUMERIC);
+        if is_negative {
+            self.eat_char();
+        }
+        //TODO OVERFLOW CHECK SOMEWHERE!!!
         if let Some(key) = self.keys.last() {
             match key {
                 ID::POSITIVEINT => {
-                    let value: i32 = self.parse_unsigned()?;
-                    self.set_unit(ID::POSITIVEINT, &mut value.to_be_bytes());
-                    Ok(())
+                    let num = self.parse_number()?;
+                    if is_negative {
+                        return Err(Error::Expected("POSITIVEINT".to_string(), "negative number".to_string()))
+                    }
+                    if let Ok(num) = i32::try_from(num) {
+                        self.set_unit(ID::POSITIVEINT, &mut (num as i32).to_be_bytes());
+                        Ok(())
+                    } else {return Err(Error::Conversion("u64".to_string(), "i32".to_string()))}
                 },
                 ID::INTEGER => {
-                    //TODO: can be minus too
-                    let value: i32 = self.parse_unsigned()?;
-                    self.set_unit(ID::INTEGER, &mut value.to_be_bytes());
+                    let num = self.parse_number()?;
+                    if let Ok(mut num) = i32::try_from(num) {
+                        if is_negative {
+                            num = num.wrapping_neg();
+                        }
+                        self.set_unit(ID::INTEGER, &mut num.to_be_bytes());
+                        Ok(())
+
+                    } else {return Err(Error::Conversion("u64".to_string(), "i32".to_string()))}
+                },
+                ID::INTEGER64 => {
+                    let num = self.parse_number()?;
+                    if let Ok(mut num) = i64::try_from(num) {
+                        if is_negative {
+                            num = num.wrapping_neg();
+                        }
+                        self.set_unit(ID::INTEGER64, &mut num.to_be_bytes());
+                        Ok(())
+
+                    } else {return Err(Error::Conversion("u64".to_string(), "i32".to_string()))}
+                },
+                ID::DECIMAL => {
+                    let mut dec = self.parse_decimal()?;
+                    if is_negative {
+                        dec = -dec;
+                    }
+                    self.set_unit(ID::DECIMAL, &mut dec.to_be_bytes());
                     Ok(())
                 },
             _ => return Err(Error::Expected("Integer".to_string(), "something else".to_string()))
@@ -273,11 +315,10 @@ impl<'p> JsonParser<'p> {
         }
     }
 
-    fn parse_unsigned<T>(&mut self) -> Result<T>
-    where T: AddAssign<T> + MulAssign<T> + From<u8>,
+    fn parse_number(&mut self) -> Result<u64>
     {
         let mut int = match self.next_char().unwrap() {
-            ch @ b'0'..=b'9' => T::from(ch - b'0'),
+            ch @ b'0'..=b'9' => u64::from(ch - b'0'),
             _ => return Err(Error::Expected("Integer".to_string(), "something else".to_string()))
         };
 
@@ -287,8 +328,8 @@ impl<'p> JsonParser<'p> {
             }
             match self.next_char() {
                 Some(ch @ b'0'..=b'9') => {
-                    int *= T::from(10);
-                    int += T::from(ch-b'0');
+                    int *= 10;
+                    int += u64::from(ch-b'0');
                 },
                  _ => {
                      return Ok(int)
@@ -298,7 +339,38 @@ impl<'p> JsonParser<'p> {
         Ok(int)
     }
 
-
+    fn parse_decimal(&mut self) -> Result<f64> {
+        let mut buf = String::new();
+        while self.peek_char().is_some() {
+            let p = self.peek_char().unwrap();
+            if p != &b'.' && !p.is_ascii_digit() {
+                match fast_float::parse(buf) {
+                   Ok(f) => {return Ok(f)}
+                   Err(_) => {return Err(Error::Custom("unable to construct DECIMAL".to_string()))}
+                }
+            }
+            match self.next_char() {
+                Some(ch @ b'0'..=b'9') => {
+                    buf.push(ch as char);
+                },
+                Some(p @ b'.') => {
+                    buf.push(p as char);
+                }
+                 _ => {
+                     println!("BUF: {}", buf);
+                     match fast_float::parse(buf) {
+                        Ok(f) => {return Ok(f)}
+                        Err(_) => {return Err(Error::Custom("unable to construct DECIMAL".to_string()))}
+                     }
+                 } 
+            }
+        }
+        match fast_float::parse(buf) {
+           Ok(f) => {return Ok(f)}
+           Err(_) => {return Err(Error::Custom("unable to construct DECIMAL".to_string()))}
+        }
+    }
+ 
 
     fn parse_primitive_list(&mut self) {
         let offset = self.writer.len();
@@ -307,7 +379,7 @@ impl<'p> JsonParser<'p> {
         if let Some(expects) = self.keys.clone().last() {
             let _ = self.writer.set_u16(*expects as u16);
             while self.peek_char().is_some() {
-                match *expects {
+                 match *expects {
                     ID::LSTRING => {
                         self.eat_whitespace();
                         let mut data = self.parse_string();
@@ -573,6 +645,34 @@ mod test {
         let result = from_json(data);
         assert_eq!(result, expects);
         assert_eq!(read_buffer(&result), read);
+
+        let data = br#"{"attachment": [{"duration": 6.23456, "size": -1234}]}"#;
+        let expects: Vec<u8> = vec![
+            //total length
+            0,42, 
+            // len + id   
+            0, 2, 16, 38, 
+            //list len
+            0,36, 
+            //id ATT
+            8,5, 
+            //item length
+            0,32, 
+            //key duration
+            0,2, 16,51, 
+            //obj l+id 
+            0,10, 0, 11, 
+            //data
+            64, 24, 240, 48, 127, 35, 204, 142, 
+            //key size
+            0,2,16,44,
+            //obj l+id
+            0,10, 0, 10,
+            //data
+            255, 255, 255, 255, 255, 255, 251, 46
+        ];
+        let result = from_json(data);
+        assert_eq!(result, expects);
     }
 
 
@@ -594,14 +694,13 @@ mod test {
 
     }
 
-    //#[test]
+    #[test]
     fn json_parse_patient() {
         let mut fd = File::open("test_data/general_person_example_no_extension.json").unwrap();
         let mut data = Vec::<u8>::new();
         fd.read_to_end(&mut data).unwrap();
-        let expects = parse_byte_file("test_data/general_person_example_bytes.txt");
+        //let expects = parse_byte_file("test_data/general_person_example_bytes.txt");
         let result = from_json(&data);
-
 
     }
 }
