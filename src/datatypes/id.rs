@@ -287,7 +287,6 @@ static IDS: phf::Map<u16, ID> = phf_map! {
     4155u16 => ID::ManagingOrganization,   //[16,58]
     4156u16 => ID::Link,                   //[16,59]
     4157u16 => ID::Other,                  //[16,60]
-                                     
 };
 
 static KEYS: phf::Map<&'static str, ID> = phf_map! {
